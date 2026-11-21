@@ -127,6 +127,14 @@ pub fn probe(path: &Path) -> Option<Probe> {
     (duration > 0.0).then_some(Probe { duration, fps, bitrate })
 }
 
+/// Guarda en `out` un fotograma pequeño (PNG de 128 px de ancho) tomado al 10 % del video.
+pub fn thumbnail(src: &Path, out: &Path) -> bool {
+    let at = probe(src).map_or(0.0, |p| p.duration * 0.1);
+    cmd("ffmpeg").args(["-v", "error", "-y", "-ss", &format!("{at:.1}")]).arg("-i").arg(src)
+        .args(["-frames:v", "1", "-vf", "scale=128:-2"]).arg(out)
+        .status().is_ok_and(|s| s.success()) && out.exists()
+}
+
 /// (total, libre) en bytes de la unidad que contiene `dir`.
 pub fn disk(dir: &Path) -> (u64, u64) {
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -174,12 +182,12 @@ pub fn compress(src: &Path, job: &Job, stop: &AtomicBool, progress: impl Fn(f32)
     let dst = outdir.join(format!("{stem}_hevc.mp4"));
     let part = outdir.join(format!("{stem}_hevc.part.mp4")); // si se corta no queda un "terminado" falso
     if dst.exists() {
-        return Outcome::Skipped("Ya existe".into());
+        return Outcome::Skipped("Ya se comprimió antes".into());
     }
     let size = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
     // el tope de bitrate deja la salida en <=60% del original (+ audio): si no cabe, ni empezar
     if (disk(src.parent().unwrap_or(Path::new("."))).1 as f64) < size as f64 * 0.65 {
-        return Outcome::Skipped("No hay espacio libre suficiente".into());
+        return Outcome::Skipped("Falta espacio en el disco".into());
     }
     let Some(info) = probe(src) else { return Outcome::Failed("No se pudo leer el video".into()) };
     if std::fs::create_dir_all(&outdir).is_err() {
@@ -237,7 +245,7 @@ pub fn compress(src: &Path, job: &Job, stop: &AtomicBool, progress: impl Fn(f32)
     let out = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(u64::MAX);
     if out >= size {
         fail(String::new());
-        return Outcome::Skipped("El comprimido no era más pequeño".into());
+        return Outcome::Skipped("Ya está optimizado".into());
     }
     if std::fs::rename(&part, &dst).is_err() {
         return Outcome::Failed(fail("No se pudo renombrar el resultado".into()));

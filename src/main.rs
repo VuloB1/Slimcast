@@ -3,14 +3,17 @@ mod encode;
 
 use encode::{Device, Encoder, Job, Outcome};
 use gpui::{
-    App, Application, Bounds, ClickEvent, Context, ExternalPaths, FontWeight, PathPromptOptions,
-    PromptLevel, SharedString, Stateful, Div, Window, WindowBounds, WindowOptions, div, prelude::*,
-    px, relative, rgb, rgba, size,
+    Animation, AnimationExt, App, Application, Bounds, ClickEvent, Context, Div, ExternalPaths, FontWeight,
+    ObjectFit, PathPromptOptions, PromptLevel, ScrollWheelEvent, SharedString, Stateful, StyledImage, Window,
+    WindowBounds, WindowOptions, canvas, div, ease_out_quint, img, prelude::*, px, relative, rgb, rgba, size,
 };
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Paleta grafito, un acento ámbar (luz de tally) y rojo solo para el punto REC
 const BG: u32 = 0x141415;
@@ -18,6 +21,7 @@ const DEEP: u32 = 0x0f0f10;
 const CARD: u32 = 0x19191b;
 const RAISED: u32 = 0x232325;
 const HOVER: u32 = 0x2b2b2e;
+const PRESSED: u32 = 0x353538;
 const LINE: u32 = 0xededed14; // texto al 8%
 const TEXT: u32 = 0xededed;
 const TEXT2: u32 = 0xa1a1a6;
@@ -30,6 +34,8 @@ const USED: u32 = 0x47474c;
 const QUEUED: u32 = 0x707077;
 const SANS: &str = "Segoe UI";
 const MONO: &str = "Cascadia Mono";
+const ROW_H: f32 = 52.;
+const ROW_GAP: f32 = 2.;
 
 #[derive(Clone)]
 enum State {
@@ -44,6 +50,7 @@ struct Item {
     name: SharedString,
     size: u64,
     state: State,
+    thumb: Option<PathBuf>,
 }
 
 struct Compresor {
@@ -55,6 +62,12 @@ struct Compresor {
     calidad: u32,
     cap30: bool,
     disk: Option<(String, u64, u64)>, // unidad, total, libre
+    // scroll propio: el de GPUI salta a golpes con la rueda, así que se suaviza a mano
+    scroll_y: f32,
+    scroll_target: f32,
+    list_h: Rc<Cell<f32>>,
+    shown: HashMap<PathBuf, f32>, // progreso que se dibuja; persigue al real
+    last_frame: Instant,
 }
 
 fn gb(n: u64) -> String {
@@ -66,33 +79,71 @@ fn short_name(name: &str) -> String {
         .fold(name.to_string(), |n, p| n.replace(p, ""))
 }
 
+/// Miniatura en %TEMP%; cambia de nombre si el video cambia de tamaño o de fecha.
+fn thumb_path(src: &PathBuf) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    src.hash(&mut h);
+    if let Ok(m) = std::fs::metadata(src) {
+        m.len().hash(&mut h);
+        m.modified().ok().hash(&mut h);
+    }
+    let dir = std::env::temp_dir().join("slimcast-thumbs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(format!("{:016x}.png", h.finish()))
+}
+
+/// Acerca `v` a `target` de forma exponencial; devuelve true cuando ya llegó.
+fn ease(v: &mut f32, target: f32, dt: f32, speed: f32, eps: f32) -> bool {
+    *v += (target - *v) * (1.0 - (-dt * speed).exp());
+    if (target - *v).abs() < eps { *v = target; true } else { false }
+}
+
 impl Compresor {
     fn new(running: Arc<AtomicBool>, stop: Arc<AtomicBool>, cx: &mut Context<Self>) -> Self {
         cx.spawn(async move |this, cx| {
             let devices = cx.background_executor().spawn(async { encode::devices() }).await;
             this.update(cx, |v, cx| {
                 v.device = devices.iter().position(|d| d.ok).unwrap_or(0);
-                v.devices = Some(devices);                cx.notify();
+                v.devices = Some(devices);
+                cx.notify();
             }).ok();
         }).detach();
         let mut v = Self {
             items: Default::default(), running, stop, devices: None, device: 0, calidad: 28, cap30: false, disk: None,
+            scroll_y: 0., scroll_target: 0., list_h: Default::default(), shown: HashMap::new(), last_frame: Instant::now(),
         };
-        v.add(std::env::args().skip(1).map(PathBuf::from).collect()); // videos soltados sobre el .exe
+        v.add(std::env::args().skip(1).map(PathBuf::from).collect(), cx); // videos soltados sobre el .exe
         v
     }
 
-    fn add(&mut self, paths: Vec<PathBuf>) {
+    fn add(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let mut items = self.items.lock().unwrap();
+        let mut fresh = Vec::new();
         for p in encode::find_videos(&paths) {
             if !items.iter().any(|i| i.path == p) {
                 let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
                 let name = p.file_name().unwrap_or_default().to_string_lossy().to_string().into();
-                items.push(Item { path: p, name, size, state: State::Queued });
+                fresh.push(p.clone());
+                items.push(Item { path: p, name, size, state: State::Queued, thumb: None });
             }
         }
         drop(items);
         self.refresh_disk();
+        // miniaturas de una en una en segundo plano; cada una aparece en cuanto está lista
+        cx.spawn(async move |this, cx| {
+            for src in fresh {
+                let out = thumb_path(&src);
+                let (s, o) = (src.clone(), out.clone());
+                let ok = cx.background_executor().spawn(async move { o.exists() || encode::thumbnail(&s, &o) }).await;
+                if !ok { continue }
+                let alive = this.update(cx, |v, cx| {
+                    if let Some(it) = v.items.lock().unwrap().iter_mut().find(|i| i.path == src) { it.thumb = Some(out) }
+                    cx.notify();
+                });
+                if alive.is_err() { break }
+            }
+        }).detach();
     }
 
     fn refresh_disk(&mut self) {
@@ -108,7 +159,7 @@ impl Compresor {
         let rx = cx.prompt_for_paths(PathPromptOptions { files: !folder, directories: folder, multiple: !folder, prompt: None });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
-                this.update(cx, |v, cx| { v.add(paths); cx.notify() }).ok();
+                this.update(cx, |v, cx| { v.add(paths, cx); cx.notify() }).ok();
             }
         }).detach();
     }
@@ -120,14 +171,17 @@ impl Compresor {
         stop.store(false, Ordering::Relaxed);
         running.store(true, Ordering::Relaxed);
         std::thread::spawn(move || {
-            let set = |i: usize, s: State| items.lock().unwrap()[i].state = s;
-            let queued: Vec<(usize, PathBuf)> = items.lock().unwrap().iter().enumerate()
-                .filter(|(_, it)| matches!(it.state, State::Queued)).map(|(i, it)| (i, it.path.clone())).collect();
-            for (i, path) in queued {
+            // por ruta y no por índice: la lista puede cambiar mientras se comprime
+            let set = |path: &PathBuf, s: State| {
+                if let Some(it) = items.lock().unwrap().iter_mut().find(|it| &it.path == path) { it.state = s }
+            };
+            let queued: Vec<PathBuf> = items.lock().unwrap().iter()
+                .filter(|it| matches!(it.state, State::Queued)).map(|it| it.path.clone()).collect();
+            for path in queued {
                 if stop.load(Ordering::Relaxed) { break }
-                set(i, State::Running(0.0));
-                let r = encode::compress(&path, &job, &stop, |p| set(i, State::Running(p)));
-                set(i, State::Finished(r));
+                set(&path, State::Running(0.0));
+                let r = encode::compress(&path, &job, &stop, |p| set(&path, State::Running(p)));
+                set(&path, State::Finished(r));
             }
             running.store(false, Ordering::Relaxed);
         });
@@ -141,17 +195,18 @@ impl Compresor {
 }
 
 fn button(id: impl Into<SharedString>, label: impl Into<SharedString>, enabled: bool) -> Stateful<Div> {
-    div().id(id.into()).flex().items_center().h(px(32.)).px(px(12.)).rounded(px(8.))
+    div().id(id.into()).flex().items_center().h(px(28.)).px(px(12.)).rounded(px(7.))
         .bg(rgb(RAISED)).border_1().border_color(rgba(LINE)).child(label.into())
-        .when(enabled, |b| b.cursor_pointer().hover(|s| s.bg(rgb(HOVER))))
+        .when(enabled, |b| b.cursor_pointer().hover(|s| s.bg(rgb(HOVER))).active(|s| s.bg(rgb(PRESSED))))
         .when(!enabled, |b| b.opacity(0.4))
 }
 
 fn segment(id: impl Into<SharedString>, label: impl Into<SharedString>, selected: bool, enabled: bool) -> Stateful<Div> {
-    div().id(id.into()).flex().items_center().h(px(28.)).px(px(12.)).rounded(px(8.))
+    div().id(id.into()).flex().items_center().h(px(26.)).px(px(10.)).rounded(px(7.))
         .text_color(rgb(if selected { TEXT } else { TEXT2 })).child(label.into())
         .when(selected, |b| b.bg(rgb(0x323235)))
-        .when(enabled && !selected, |b| b.cursor_pointer().hover(|s| s.text_color(rgb(TEXT))))
+        .when(enabled && !selected, |b| b.cursor_pointer()
+            .hover(|s| s.text_color(rgb(TEXT)).bg(rgb(HOVER))).active(|s| s.bg(rgb(PRESSED))))
         .when(!enabled, |b| b.opacity(0.4))
 }
 
@@ -160,7 +215,7 @@ fn meter_part(frac: f64, color: u32) -> Div {
 }
 
 impl Render for Compresor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let items = self.items.lock().unwrap().clone();
         let running = self.running.load(Ordering::Relaxed);
         let queued = items.iter().filter(|i| matches!(i.state, State::Queued)).count();
@@ -168,9 +223,30 @@ impl Render for Compresor {
         let can_start = !running && queued > 0 && device_ok;
         let has = !items.is_empty();
 
-        let header = div().flex().items_center().justify_between().h(px(56.)).px(px(24.))
+        // animación: el scroll y las barras persiguen su objetivo; se pide otro fotograma hasta que llegan
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
+        self.last_frame = now;
+        let content_h = if has { items.len() as f32 * (ROW_H + ROW_GAP) + 8. } else { 0. };
+        let view_h = self.list_h.get();
+        let max_scroll = (content_h - view_h).max(0.);
+        self.scroll_target = self.scroll_target.clamp(0., max_scroll);
+        let mut settled = ease(&mut self.scroll_y, self.scroll_target, dt, 18., 0.5);
+        self.shown.retain(|p, _| items.iter().any(|i| &i.path == p));
+        for it in &items {
+            let target = match &it.state {
+                State::Running(p) => *p,
+                State::Finished(Outcome::Done(out)) => *out as f32 / it.size.max(1) as f32,
+                _ => 0.0,
+            };
+            let v = self.shown.entry(it.path.clone()).or_insert(target);
+            settled &= ease(v, target, dt, 6., 0.001);
+        }
+        if !settled { window.request_animation_frame() }
+
+        let header = div().flex().items_center().justify_between().h(px(48.)).px(px(20.))
             .border_b_1().border_color(rgba(LINE))
-            .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("Slimcast"))
+            .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child("Slimcast"))
             .when(has, |h| h.child(div().flex().gap(px(8.))
                 .child(button("add-files", "Añadir videos", !running)
                     .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx)))))
@@ -182,49 +258,56 @@ impl Render for Compresor {
             let freed: u64 = items.iter().map(|i| match i.state { State::Finished(Outcome::Done(out)) => i.size - out, _ => 0 }).sum();
             let used = total.saturating_sub(free);
             let t = total.max(1) as f64;
-            let figure = |value: String, label: &'static str, color: u32| div().flex().items_baseline().gap(px(8.))
-                .child(div().font_family(MONO).text_size(px(32.)).line_height(px(32.)).font_weight(FontWeight::MEDIUM).text_color(rgb(color)).child(value))
-                .child(div().text_color(rgb(TEXT2)).child(label));
-            let legend = |color: u32, label: String| div().flex().items_center().gap(px(8.))
+            let legend = |color: u32, label: String| div().flex().items_center().gap(px(6.))
                 .child(div().size(px(8.)).rounded(px(2.)).bg(rgb(color))).child(label);
-            div().flex().flex_col().p(px(24.)).pt(px(20.)).rounded(px(16.)).bg(rgb(CARD)).border_1().border_color(rgba(LINE))
-                .child(div().flex().justify_between()
+            div().flex().flex_col().gap(px(10.)).px(px(16.)).py(px(12.)).rounded(px(12.)).bg(rgb(CARD))
+                .border_1().border_color(rgba(LINE))
+                .child(div().flex().items_baseline().gap(px(10.))
                     .child(div().text_color(rgb(TEXT2)).child(format!("Disco {drive}")))
-                    .child(div().font_family(MONO).text_size(px(12.)).text_color(rgb(MUTED)).child(gb(total))))
-                .child(div().flex().items_baseline().gap(px(40.)).mt(px(8.))
-                    .child(figure(gb(free), "libres", TEXT))
-                    .when(freed > 0, |d| d.child(figure(format!("+{}", gb(freed)), "al borrar los originales", ACCENT))))
-                .child(div().flex().h(px(12.)).mt(px(20.)).rounded(px(6.)).overflow_hidden().bg(rgb(RAISED))
+                    .child(div().font_family(MONO).text_size(px(20.)).font_weight(FontWeight::MEDIUM).child(gb(free)))
+                    .child(div().text_color(rgb(TEXT2)).child(format!("libres de {}", gb(total))))
+                    .when(freed > 0, |d| d.child(div().ml(px(8.)).text_color(rgb(ACCENT))
+                        .child(format!("+{} al borrar los originales", gb(freed)))))
+                    .child(div().flex_1())
+                    .child(div().flex().gap(px(16.)).text_size(px(12.)).text_color(rgb(TEXT2))
+                        .child(legend(USED, "Ocupado".into()))
+                        .child(legend(QUEUED, format!("En cola {}", gb(pending))))
+                        .child(legend(ACCENT, "Liberable".into()))))
+                .child(div().flex().h(px(6.)).rounded(px(3.)).overflow_hidden().bg(rgb(RAISED))
                     .child(meter_part(used.saturating_sub(pending + freed) as f64 / t, USED))
                     .child(meter_part(pending as f64 / t, QUEUED))
                     .child(meter_part(freed as f64 / t, ACCENT)))
-                .child(div().flex().gap(px(20.)).mt(px(12.)).text_size(px(12.)).text_color(rgb(TEXT2))
-                    .child(legend(USED, "Ocupado".into()))
-                    .child(legend(QUEUED, format!("En cola {}", gb(pending))))
-                    .child(legend(ACCENT, "Liberable".into())))
         });
 
-        let rows = items.iter().enumerate().map(|(i, it)| {
-            let (bar, bar_color, sizes, state, state_color) = match &it.state {
-                State::Queued => (0.0, TEXT2, gb(it.size), "En cola".to_string(), MUTED),
-                State::Running(p) => (*p, TEXT2, gb(it.size), format!("Comprimiendo {}%", (p * 100.0) as u32), TEXT),
-                State::Finished(Outcome::Done(out)) => (*out as f32 / it.size as f32, ACCENT,
+        let rows: Vec<_> = items.iter().enumerate().map(|(i, it)| {
+            let shown = self.shown.get(&it.path).copied().unwrap_or(0.0);
+            let (bar_color, sizes, state, state_color) = match &it.state {
+                State::Queued => (TEXT2, gb(it.size), "En cola".to_string(), MUTED),
+                State::Running(p) => (TEXT2, gb(it.size), format!("Comprimiendo {}%", (p * 100.0) as u32), TEXT),
+                State::Finished(Outcome::Done(out)) => (ACCENT,
                     format!("{} → {}  −{}%", gb(it.size), gb(*out), 100 - out * 100 / it.size.max(1)), "Listo".into(), OK),
-                State::Finished(Outcome::Skipped(m)) => (0.0, TEXT2, gb(it.size), m.clone(), MUTED),
-                State::Finished(Outcome::Failed(m)) => (0.0, TEXT2, gb(it.size), m.clone(), REC),
-                State::Finished(Outcome::Cancelled) => (0.0, TEXT2, gb(it.size), "Cancelado".into(), MUTED),
+                State::Finished(Outcome::Skipped(m)) => (TEXT2, gb(it.size), m.clone(), TEXT2),
+                State::Finished(Outcome::Failed(m)) => (TEXT2, gb(it.size), m.clone(), REC),
+                State::Finished(Outcome::Cancelled) => (TEXT2, gb(it.size), "Cancelado".into(), MUTED),
             };
             let live = matches!(it.state, State::Running(_));
-            div().id(("row", i)).flex().items_center().gap(px(12.)).p(px(12.)).rounded(px(8.))
+            let key = it.path.display().to_string();
+            let thumb = div().w(px(64.)).h(px(36.)).flex_none().rounded(px(4.)).overflow_hidden().bg(rgb(RAISED))
+                .when_some(it.thumb.clone(), |d, t| d.child(img(t).size_full().object_fit(ObjectFit::Cover)
+                    .with_animation(SharedString::from(format!("th{key}")),
+                        Animation::new(Duration::from_millis(300)).with_easing(ease_out_quint()), |e, t| e.opacity(t))));
+            div().id(("row", i)).flex().flex_none().items_center().gap(px(12.)).h(px(ROW_H)).px(px(8.)).rounded(px(8.))
                 .hover(|s| s.bg(rgb(RAISED)))
-                .child(div().size(px(8.)).rounded_full().when(live, |d| d.bg(rgb(REC))))
-                .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(8.))
-                    .child(div().truncate().child(it.name.clone()))
-                    .child(div().h(px(4.)).rounded(px(2.)).bg(rgb(TRACK)).overflow_hidden()
-                        .child(div().h_full().w(relative(bar.clamp(0.0, 1.0))).bg(rgb(bar_color)))))
-                .child(div().w(px(220.)).flex().justify_end().font_family(MONO).text_size(px(12.)).text_color(rgb(TEXT2)).child(sizes))
-                .child(div().w(px(150.)).truncate().text_size(px(13.)).text_color(rgb(state_color)).child(state))
-                .child(div().id(("rm", i)).size(px(28.)).flex().items_center().justify_center().rounded(px(8.))
+                .child(div().size(px(6.)).flex_none().rounded_full().when(live, |d| d.bg(rgb(REC))))
+                .child(thumb)
+                .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(6.))
+                    .child(div().truncate().text_size(px(13.)).child(it.name.clone()))
+                    .child(div().h(px(3.)).rounded(px(2.)).bg(rgb(TRACK)).overflow_hidden()
+                        .child(div().h_full().w(relative(shown.clamp(0.0, 1.0))).bg(rgb(bar_color)))))
+                .child(div().w(px(200.)).flex_none().flex().justify_end().font_family(MONO).text_size(px(12.))
+                    .text_color(rgb(TEXT2)).child(sizes))
+                .child(div().w(px(180.)).flex_none().truncate().text_size(px(13.)).text_color(rgb(state_color)).child(state))
+                .child(div().id(("rm", i)).size(px(24.)).flex_none().flex().items_center().justify_center().rounded(px(6.))
                     .text_color(rgb(MUTED)).child("×")
                     .when(running, |b| b.opacity(0.4))
                     .when(!running, |b| b.cursor_pointer().hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
@@ -233,26 +316,47 @@ impl Render for Compresor {
                             v.refresh_disk();
                             cx.notify();
                         }))))
-        });
+                .with_animation(SharedString::from(format!("in{key}")),
+                    Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
+                    |row, t| row.opacity(t).relative().left(px((1.0 - t) * 12.)))
+        }).collect();
 
-        let queue = div().id("queue").flex_1().min_h(px(0.)).flex().flex_col().rounded(px(16.)).bg(rgb(CARD))
+        let list_h = self.list_h.clone();
+        let scrollbar = (max_scroll > 0. && view_h > 0.).then(|| {
+            let thumb_h = (view_h * view_h / content_h).max(24.);
+            let top = self.scroll_y / max_scroll * (view_h - thumb_h);
+            div().absolute().right(px(3.)).top(px(top)).w(px(3.)).h(px(thumb_h)).rounded(px(2.)).bg(rgba(0xededed30))
+        });
+        let list = div().id("list").relative().flex_1().min_h(px(0.)).overflow_hidden()
+            .on_scroll_wheel(cx.listener(|v, e: &ScrollWheelEvent, window, cx| {
+                v.scroll_target -= f32::from(e.delta.pixel_delta(window.line_height()).y);
+                cx.notify();
+            }))
+            .child(canvas(move |b, _, _| list_h.set(f32::from(b.size.height)), |_, _, _, _| {}).absolute().size_full())
+            .child(div().absolute().left_0().right_0().top(px(-self.scroll_y)).px(px(8.))
+                .flex().flex_col().gap(px(ROW_GAP)).children(rows))
+            .children(scrollbar);
+
+        let done = items.iter().filter(|i| matches!(i.state, State::Finished(_))).count();
+        let queue = div().id("queue").flex_1().min_h(px(0.)).flex().flex_col().rounded(px(12.)).bg(rgb(CARD))
             .border_1().border_color(rgba(LINE))
             .drag_over::<ExternalPaths>(|s, _, _, _| s.border_color(rgb(ACCENT)).bg(rgb(0x1d1c1a)))
             .when(has, |q| q
-                .child(div().flex().justify_between().px(px(24.)).pt(px(16.)).pb(px(8.)).text_color(rgb(TEXT2))
+                .child(div().flex().items_baseline().justify_between().px(px(16.)).pt(px(10.)).pb(px(6.)).text_color(rgb(TEXT2))
                     .child(div().flex().gap(px(8.)).items_baseline().child("Cola")
                         .child(div().font_family(MONO).text_size(px(12.)).text_color(rgb(MUTED))
-                            .child(format!("{} {}", items.len(), if items.len() == 1 { "video" } else { "videos" }))))
-                    .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child("Los originales no se tocan, el resultado va a la carpeta comprimidos")))
-                .child(div().id("list").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(12.)).pb(px(12.)).flex().flex_col().gap(px(2.)).children(rows)))
+                            .child(format!("{done}/{} {}", items.len(), if items.len() == 1 { "video" } else { "videos" }))))
+                    .child(div().text_size(px(12.)).text_color(rgb(MUTED))
+                        .child("Los originales no se tocan. El resultado va a la carpeta comprimidos")))
+                .child(list))
             .when(!has, |q| q.child(div().flex_1().m(px(12.)).flex().flex_col().items_center().justify_center().gap(px(16.))
-                .rounded(px(12.)).border_1().border_dashed().border_color(rgba(0xededed24)).text_color(rgb(TEXT2))
+                .rounded(px(10.)).border_1().border_dashed().border_color(rgba(0xededed24)).text_color(rgb(TEXT2))
                 .child("Arrastra aquí tus grabaciones o una carpeta")
                 .child(div().flex().gap(px(8.))
                     .child(button("e-files", "Añadir videos", true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx))))
                     .child(button("e-folder", "Añadir carpeta", true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))));
 
-        let seg_group = |children: Vec<Stateful<Div>>| div().flex().p(px(2.)).rounded(px(10.)).bg(rgb(RAISED))
+        let seg_group = |children: Vec<Stateful<Div>>| div().flex().p(px(2.)).rounded(px(9.)).bg(rgb(RAISED))
             .border_1().border_color(rgba(LINE)).children(children);
         let qualities = [(24, "Máxima calidad"), (28, "Equilibrado"), (32, "Más pequeño")].into_iter().map(|(q, label)| {
             segment(SharedString::from(format!("q{q}")), label, self.calidad == q, !running)
@@ -276,31 +380,39 @@ impl Render for Compresor {
             .when(running, |b| b.opacity(0.4))
             .when(!running, |b| b.cursor_pointer().on_click(cx.listener(|v, _: &ClickEvent, _, cx| { v.cap30 = !v.cap30; cx.notify() })));
 
-        let footer = div().flex().items_center().gap(px(24.)).px(px(24.)).py(px(16.)).bg(rgb(DEEP))
+        // un solo hueco para la acción principal: mientras comprime, Comprimir pasa a ser Cancelar
+        let action = div().id("start").flex().flex_none().items_center().justify_center().min_w(px(150.)).h(px(36.)).px(px(16.))
+            .rounded(px(8.)).font_weight(FontWeight::MEDIUM);
+        let action = if running {
+            action.bg(rgb(RAISED)).border_1().border_color(rgba(LINE)).text_color(rgb(TEXT)).child("Cancelar")
+                .cursor_pointer().hover(|s| s.bg(rgb(HOVER))).active(|s| s.bg(rgb(PRESSED)))
+                .on_click(cx.listener(|v, _: &ClickEvent, _, _| v.stop.store(true, Ordering::Relaxed)))
+        } else {
+            action.bg(rgb(TEXT)).text_color(rgb(BG))
+                .child(if queued > 1 { format!("Comprimir {queued} videos") } else { "Comprimir".into() })
+                .when(can_start, |b| b.cursor_pointer().hover(|s| s.bg(rgb(0xffffff))).active(|s| s.bg(rgb(0xd4d4d4)))
+                    .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.start(cx))))
+                .when(!can_start, |b| b.opacity(0.4))
+        };
+
+        let footer = div().flex().items_center().gap(px(20.)).px(px(20.)).py(px(12.)).bg(rgb(DEEP))
             .border_t_1().border_color(rgba(LINE)).whitespace_nowrap()
-            .child(div().flex().items_center().gap(px(12.)).text_color(rgb(TEXT2)).child("Dispositivo").child(seg_group(devices)))
-            .child(div().flex().items_center().gap(px(12.)).text_color(rgb(TEXT2)).child("Tamaño").child(seg_group(qualities)))
+            .child(div().flex().items_center().gap(px(10.)).text_color(rgb(TEXT2)).child("Dispositivo").child(seg_group(devices)))
+            .child(div().flex().items_center().gap(px(10.)).text_color(rgb(TEXT2)).child("Tamaño").child(seg_group(qualities)))
             .child(cap30)
             .child(div().flex_1())
-            .when(running, |f| f.child(button("cancel", "Cancelar", true)
-                .on_click(cx.listener(|v, _: &ClickEvent, _, _| v.stop.store(true, Ordering::Relaxed)))))
-            .child(div().id("start").flex().items_center().h(px(40.)).px(px(20.)).rounded(px(8.))
-                .bg(rgb(TEXT)).text_color(rgb(BG)).font_weight(FontWeight::MEDIUM)
-                .child(if queued > 1 { format!("Comprimir {queued} videos") } else { "Comprimir".into() })
-                .when(can_start, |b| b.cursor_pointer().hover(|s| s.bg(rgb(0xffffff)))
-                    .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.start(cx))))
-                .when(!can_start, |b| b.opacity(0.4)));
+            .child(action);
 
         let ffmpeg_missing = self.devices.as_ref().is_some_and(|d| d.iter().all(|d| !d.ok));
         div().id("root").size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family(SANS).text_size(px(14.))
             .on_drop(cx.listener(|v, paths: &ExternalPaths, _, cx| {
-                if !v.running.load(Ordering::Relaxed) { v.add(paths.paths().to_vec()); cx.notify() }
+                if !v.running.load(Ordering::Relaxed) { v.add(paths.paths().to_vec(), cx); cx.notify() }
             }))
             .child(header)
-            .child(div().flex_1().min_h(px(0.)).flex().flex_col().gap(px(16.)).p(px(24.))
-                .when(ffmpeg_missing, |m| m.child(div().px(px(16.)).py(px(12.)).rounded(px(12.)).bg(rgba(0xe5484d1a))
+            .child(div().flex_1().min_h(px(0.)).flex().flex_col().gap(px(12.)).p(px(16.))
+                .when(ffmpeg_missing, |m| m.child(div().px(px(16.)).py(px(10.)).rounded(px(10.)).bg(rgba(0xe5484d1a))
                     .border_1().border_color(rgba(0xe5484d4d)).text_color(rgb(0xf2a7a9))
-                    .child("No se encuentra ffmpeg. Instálalo con  winget install Gyan.FFmpeg --version 8.0.1  y vuelve a abrir el programa")))
+                    .child("No se encuentra ffmpeg. Reinstala Slimcast o instala ffmpeg con  winget install Gyan.FFmpeg --version 8.0.1")))
                 .children(disk)
                 .child(queue))
             .child(footer)
@@ -311,10 +423,10 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         let running = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
-        let bounds = Bounds::centered(None, size(px(1180.), px(640.)), cx);
+        let bounds = Bounds::centered(None, size(px(1100.), px(640.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(1140.), px(520.))),
+            window_min_size: Some(size(px(1040.), px(440.))),
             titlebar: Some(gpui::TitlebarOptions { title: Some("Slimcast".into()), ..Default::default() }),
             ..Default::default()
         };
@@ -341,4 +453,3 @@ fn main() {
         cx.activate(true);
     });
 }
-
