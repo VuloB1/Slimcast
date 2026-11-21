@@ -1,0 +1,17 @@
+[package]
+name = "slimcast"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+gpui = "0.2.2"
+windows = { version = "0.61", features = ["Win32_Graphics_Dxgi", "Win32_Storage_FileSystem"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+[build-dependencies]
+winresource = "0.1"
