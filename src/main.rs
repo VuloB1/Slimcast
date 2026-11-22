@@ -1,8 +1,10 @@
 #![windows_subsystem = "windows"] // sin consola detrás de la ventana
 mod encode;
+mod i18n;
 mod update;
 
 use encode::{Device, Encoder, Job, Outcome};
+use i18n::{t, tf};
 use gpui::{
     App, Application, Bounds, ClickEvent, Context, Div, ExternalPaths, FontWeight,
     ObjectFit, PathPromptOptions, PromptLevel, ScrollWheelEvent, SharedString, Stateful, StyledImage, Window,
@@ -33,7 +35,6 @@ const OK: u32 = 0x4cc38a;
 const TRACK: u32 = 0x2c2c2f; // más claro que RAISED para que la barra se vea con la fila resaltada
 const USED: u32 = 0x47474c;
 const QUEUED: u32 = 0x707077;
-const SANS: &str = "Segoe UI";
 const MONO: &str = "Cascadia Mono";
 const ROW_H: f32 = 52.;
 const ROW_GAP: f32 = 2.;
@@ -77,7 +78,7 @@ struct Compresor {
     shown: HashMap<PathBuf, f32>, // progreso que se dibuja; persigue al real
     last_frame: Instant,
     update: Option<update::Release>, // versión nueva en GitHub
-    update_msg: Option<SharedString>, // "Descargando…" o el error
+    update_msg: Option<SharedString>, // mensaje de descarga o el error
 }
 
 fn gb(n: u64) -> String {
@@ -172,7 +173,7 @@ impl Compresor {
 
     fn install_update(&mut self, cx: &mut Context<Self>) {
         let Some(release) = self.update.clone() else { return };
-        self.update_msg = Some("Descargando…".into());
+        self.update_msg = Some(t("downloading").into());
         cx.notify();
         cx.spawn(async move |this, cx| {
             match cx.background_executor().spawn(async move { update::install(&release) }).await {
@@ -302,9 +303,9 @@ impl Render for Compresor {
                 .child(div().font_family(MONO).text_size(px(11.)).text_color(rgb(MUTED))
                     .child(concat!("v", env!("CARGO_PKG_VERSION")))))
             .when(has, |h| h.child(div().flex().gap(px(8.)).pr(px(12.))
-                .child(button("add-files", "Añadir videos", !running)
+                .child(button("add-files", t("add_videos"), !running)
                     .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx)))))
-                .child(button("add-folder", "Añadir carpeta", !running)
+                .child(button("add-folder", t("add_folder"), !running)
                     .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))))
             .child(caption("min", "\u{e921}", WindowControlArea::Min, false))
             .child(caption("max", if window.is_maximized() { "\u{e923}" } else { "\u{e922}" }, WindowControlArea::Max, false))
@@ -314,38 +315,38 @@ impl Render for Compresor {
             let pending: u64 = items.iter().filter(|i| matches!(i.state, State::Queued | State::Running(_))).map(|i| i.size).sum();
             let freed: u64 = items.iter().map(|i| match i.state { State::Finished(Outcome::Done(out)) => i.size - out, _ => 0 }).sum();
             let used = total.saturating_sub(free);
-            let t = total.max(1) as f64;
+            let tot = total.max(1) as f64;
             let legend = |color: u32, label: String| div().flex().items_center().gap(px(6.))
                 .child(div().size(px(8.)).rounded(px(2.)).bg(rgb(color))).child(label);
             div().flex().flex_col().gap(px(10.)).px(px(16.)).py(px(12.)).rounded(px(12.)).bg(rgb(CARD))
                 .border_1().border_color(rgba(LINE))
                 .child(div().flex().items_baseline().gap(px(10.))
-                    .child(div().text_color(rgb(TEXT2)).child(format!("Disco {drive}")))
+                    .child(div().text_color(rgb(TEXT2)).child(tf("disk", &[&drive])))
                     .child(div().font_family(MONO).text_size(px(20.)).font_weight(FontWeight::MEDIUM).child(gb(free)))
-                    .child(div().text_color(rgb(TEXT2)).child(format!("libres de {}", gb(total))))
+                    .child(div().text_color(rgb(TEXT2)).child(tf("free_of", &[&gb(total)])))
                     .when(freed > 0, |d| d.child(div().ml(px(8.)).text_color(rgb(ACCENT))
-                        .child(format!("+{} al borrar los originales", gb(freed)))))
+                        .child(tf("freed", &[&gb(freed)]))))
                     .child(div().flex_1())
                     .child(div().flex().gap(px(16.)).text_size(px(12.)).text_color(rgb(TEXT2))
-                        .child(legend(USED, "Ocupado".into()))
-                        .child(legend(QUEUED, format!("En cola {}", gb(pending))))
-                        .child(legend(ACCENT, "Liberable".into()))))
+                        .child(legend(USED, t("used").into()))
+                        .child(legend(QUEUED, tf("queued_size", &[&gb(pending)])))
+                        .child(legend(ACCENT, t("freeable").into()))))
                 .child(div().flex().h(px(6.)).rounded(px(3.)).overflow_hidden().bg(rgb(RAISED))
-                    .child(meter_part(used.saturating_sub(pending + freed) as f64 / t, USED))
-                    .child(meter_part(pending as f64 / t, QUEUED))
-                    .child(meter_part(freed as f64 / t, ACCENT)))
+                    .child(meter_part(used.saturating_sub(pending + freed) as f64 / tot, USED))
+                    .child(meter_part(pending as f64 / tot, QUEUED))
+                    .child(meter_part(freed as f64 / tot, ACCENT)))
         });
 
         let rows: Vec<_> = items.iter().enumerate().skip(first).take(last - first).map(|(i, it)| {
             let shown = self.shown.get(&it.path).copied().unwrap_or(0.0);
             let (bar_color, sizes, state, state_color) = match &it.state {
-                State::Queued => (TEXT2, gb(it.size), "En cola".to_string(), MUTED),
-                State::Running(p) => (TEXT2, gb(it.size), format!("Comprimiendo {}%", (p * 100.0) as u32), TEXT),
+                State::Queued => (TEXT2, gb(it.size), t("queued").to_string(), MUTED),
+                State::Running(p) => (TEXT2, gb(it.size), tf("compressing", &[&((p * 100.0) as u32)]), TEXT),
                 State::Finished(Outcome::Done(out)) => (ACCENT,
-                    format!("{} → {}  −{}%", gb(it.size), gb(*out), 100 - out * 100 / it.size.max(1)), "Listo".into(), OK),
+                    format!("{} → {}  −{}%", gb(it.size), gb(*out), 100 - out * 100 / it.size.max(1)), t("done").into(), OK),
                 State::Finished(Outcome::Skipped(m)) => (TEXT2, gb(it.size), m.clone(), TEXT2),
                 State::Finished(Outcome::Failed(m)) => (TEXT2, gb(it.size), m.clone(), REC),
-                State::Finished(Outcome::Cancelled) => (TEXT2, gb(it.size), "Cancelado".into(), MUTED),
+                State::Finished(Outcome::Cancelled) => (TEXT2, gb(it.size), t("cancelled").into(), MUTED),
             };
             let live = matches!(it.state, State::Running(_));
             // animaciones calculadas a mano: con with_animation se repetirían cada vez que una fila vuelve a la vista
@@ -398,27 +399,27 @@ impl Render for Compresor {
             .drag_over::<ExternalPaths>(|s, _, _, _| s.border_color(rgb(ACCENT)).bg(rgb(0x1d1c1a)))
             .when(has, |q| q
                 .child(div().flex().items_baseline().justify_between().px(px(16.)).pt(px(10.)).pb(px(6.)).text_color(rgb(TEXT2))
-                    .child(div().flex().gap(px(8.)).items_baseline().child("Cola")
+                    .child(div().flex().gap(px(8.)).items_baseline().child(t("queue"))
                         .child(div().font_family(MONO).text_size(px(12.)).text_color(rgb(MUTED))
-                            .child(format!("{done}/{} {}", items.len(), if items.len() == 1 { "video" } else { "videos" }))))
+                            .child(tf("count", &[&done, &items.len()]))))
                     .child(div().text_size(px(12.)).text_color(rgb(MUTED))
-                        .child("Los originales no se tocan. El resultado va a la carpeta comprimidos")))
+                        .child(t("note"))))
                 .child(list))
             .when(!has, |q| q.child(div().flex_1().m(px(12.)).flex().flex_col().items_center().justify_center().gap(px(16.))
                 .rounded(px(10.)).border_1().border_dashed().border_color(rgba(0xededed24)).text_color(rgb(TEXT2))
-                .child("Arrastra aquí tus grabaciones o una carpeta")
+                .child(t("drop"))
                 .child(div().flex().gap(px(8.))
-                    .child(button("e-files", "Añadir videos", true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx))))
-                    .child(button("e-folder", "Añadir carpeta", true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))));
+                    .child(button("e-files", t("add_videos"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx))))
+                    .child(button("e-folder", t("add_folder"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))));
 
         let seg_group = |children: Vec<Stateful<Div>>| div().flex().p(px(2.)).rounded(px(9.)).bg(rgb(RAISED))
             .border_1().border_color(rgba(LINE)).children(children);
-        let qualities = [(24, "Máxima calidad"), (28, "Equilibrado"), (32, "Más pequeño")].into_iter().map(|(q, label)| {
+        let qualities = [(24, t("q_best")), (28, t("q_balanced")), (32, t("q_small"))].into_iter().map(|(q, label)| {
             segment(SharedString::from(format!("q{q}")), label, self.calidad == q, !running)
                 .when(!running, |b| b.on_click(cx.listener(move |v, _: &ClickEvent, _, cx| { v.calidad = q; cx.notify() })))
         }).collect();
         let devices: Vec<Stateful<Div>> = match &self.devices {
-            None => vec![segment("detect", "Detectando…", false, false)],
+            None => vec![segment("detect", t("detecting"), false, false)],
             Some(list) => list.iter().enumerate().map(|(i, d)| {
                 let label = if d.encoder == Encoder::Cpu { "CPU".to_string() } else { short_name(&d.name) };
                 let label = if d.ok { label } else { format!("{label} (no disponible)") };
@@ -431,7 +432,7 @@ impl Render for Compresor {
             .child(div().size(px(16.)).rounded(px(4.)).border_1().flex().items_center().justify_center().text_size(px(11.))
                 .when(self.cap30, |c| c.bg(rgb(ACCENT)).border_color(rgb(ACCENT)).text_color(rgb(BG)).child("✓"))
                 .when(!self.cap30, |c| c.bg(rgb(RAISED)).border_color(rgba(0xededed30))))
-            .child("Bajar a 30 fps")
+            .child(t("fps30"))
             .when(running, |b| b.opacity(0.4))
             .when(!running, |b| b.cursor_pointer().on_click(cx.listener(|v, _: &ClickEvent, _, cx| { v.cap30 = !v.cap30; cx.notify() })));
 
@@ -439,12 +440,12 @@ impl Render for Compresor {
         let action = div().id("start").flex().flex_none().items_center().justify_center().min_w(px(150.)).h(px(36.)).px(px(16.))
             .rounded(px(8.)).font_weight(FontWeight::MEDIUM);
         let action = if running {
-            action.bg(rgb(RAISED)).border_1().border_color(rgba(LINE)).text_color(rgb(TEXT)).child("Cancelar")
+            action.bg(rgb(RAISED)).border_1().border_color(rgba(LINE)).text_color(rgb(TEXT)).child(t("cancel"))
                 .cursor_pointer().hover(|s| s.bg(rgb(HOVER))).active(|s| s.bg(rgb(PRESSED)))
                 .on_click(cx.listener(|v, _: &ClickEvent, _, _| v.stop.store(true, Ordering::Relaxed)))
         } else {
             action.bg(rgb(TEXT)).text_color(rgb(BG))
-                .child(if queued > 1 { format!("Comprimir {queued} videos") } else { "Comprimir".into() })
+                .child(if queued > 1 { tf("compress_n", &[&queued]) } else { t("compress").into() })
                 .when(can_start, |b| b.cursor_pointer().hover(|s| s.bg(rgb(0xffffff))).active(|s| s.bg(rgb(0xd4d4d4)))
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.start(cx))))
                 .when(!can_start, |b| b.opacity(0.4))
@@ -452,14 +453,15 @@ impl Render for Compresor {
 
         let footer = div().flex().items_center().gap(px(20.)).px(px(20.)).py(px(12.)).bg(rgb(DEEP))
             .border_t_1().border_color(rgba(LINE)).whitespace_nowrap()
-            .child(div().flex().items_center().gap(px(10.)).text_color(rgb(TEXT2)).child("Dispositivo").child(seg_group(devices)))
-            .child(div().flex().items_center().gap(px(10.)).text_color(rgb(TEXT2)).child("Tamaño").child(seg_group(qualities)))
-            .child(cap30)
-            .child(div().flex_1())
+            // los ajustes se recortan si un idioma no cabe; el botón principal nunca se mueve
+            .child(div().flex_1().min_w(px(0.)).overflow_hidden().flex().items_center().gap(px(20.))
+                .child(div().flex().flex_none().items_center().gap(px(10.)).text_color(rgb(TEXT2)).child(t("device")).child(seg_group(devices)))
+                .child(div().flex().flex_none().items_center().gap(px(10.)).text_color(rgb(TEXT2)).child(t("size")).child(seg_group(qualities)))
+                .child(cap30))
             .child(action);
 
         let ffmpeg_missing = self.devices.as_ref().is_some_and(|d| d.iter().all(|d| !d.ok));
-        div().id("root").size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family(SANS).text_size(px(14.))
+        div().id("root").size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family(i18n::font()).text_size(px(14.))
             .on_drop(cx.listener(|v, paths: &ExternalPaths, _, cx| {
                 if !v.running.load(Ordering::Relaxed) { v.add(paths.paths().to_vec(), cx); cx.notify() }
             }))
@@ -467,18 +469,18 @@ impl Render for Compresor {
             .child(div().flex_1().min_h(px(0.)).flex().flex_col().gap(px(12.)).p(px(16.))
                 .when(ffmpeg_missing, |m| m.child(div().px(px(16.)).py(px(10.)).rounded(px(10.)).bg(rgba(0xe5484d1a))
                     .border_1().border_color(rgba(0xe5484d4d)).text_color(rgb(0xf2a7a9))
-                    .child("No se encuentra ffmpeg. Reinstala Slimcast o instala ffmpeg con  winget install Gyan.FFmpeg --version 8.0.1")))
+                    .child(t("no_ffmpeg_banner"))))
                 .when_some(self.update.clone(), |m, r| {
-                    let busy = self.update_msg.as_ref().is_some_and(|m| m.as_ref() == "Descargando…");
+                    let busy = self.update_msg.as_ref().is_some_and(|m| m.as_ref() == t("downloading"));
                     let enabled = !running && !busy;
                     m.child(div().flex().items_center().gap(px(12.)).px(px(16.)).py(px(8.)).rounded(px(10.))
                         .bg(rgba(0xe8a33d14)).border_1().border_color(rgba(0xe8a33d40))
-                        .child(div().text_color(rgb(ACCENT)).child(format!("Slimcast {} disponible", r.version)))
+                        .child(div().text_color(rgb(ACCENT)).child(tf("update_available", &[&r.version])))
                         .child(div().flex_1().text_color(rgb(TEXT2)).text_size(px(12.))
-                            .child(if busy { "Slimcast se cerrará y volverá a abrirse ya actualizado".into() }
-                                else if running { "Podrás actualizar al terminar la compresión".into() }
+                            .child(if busy { t("update_restart").into() }
+                                else if running { t("update_later").into() }
                                 else { self.update_msg.clone().unwrap_or_default() }))
-                        .child(button("update", if busy { "Descargando…" } else { "Actualizar" }, enabled)
+                        .child(button("update", if busy { t("downloading") } else { t("update") }, enabled)
                             .when(enabled, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.install_update(cx))))))
                 })
                 .children(disk)
@@ -502,8 +504,8 @@ fn main() {
             let (r, s) = (running.clone(), stop.clone());
             window.on_window_should_close(cx, move |window, cx| {
                 if !r.load(Ordering::Relaxed) { return true }
-                let answer = window.prompt(PromptLevel::Warning, "Hay una compresión en marcha",
-                    Some("Si sales se cancela y se borra el archivo a medias"), &["Cancelar y salir", "Seguir"], cx);
+                let answer = window.prompt(PromptLevel::Warning, t("running_title"),
+                    Some(t("running_detail")), &[t("cancel_quit"), t("keep_going")], cx);
                 let (r, s) = (r.clone(), s.clone());
                 cx.spawn(async move |cx| {
                     if answer.await != Ok(0) { return }

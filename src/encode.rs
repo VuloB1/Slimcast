@@ -1,4 +1,5 @@
 //! Detección de dispositivos y compresión con ffmpeg (port de comprimir.py).
+use crate::i18n::{t, tf};
 use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -182,16 +183,16 @@ pub fn compress(src: &Path, job: &Job, stop: &AtomicBool, progress: impl Fn(f32)
     let dst = outdir.join(format!("{stem}_hevc.mp4"));
     let part = outdir.join(format!("{stem}_hevc.part.mp4")); // si se corta no queda un "terminado" falso
     if dst.exists() {
-        return Outcome::Skipped("Ya se comprimió antes".into());
+        return Outcome::Skipped(t("already").into());
     }
     let size = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
     // el tope de bitrate deja la salida en <=60% del original (+ audio): si no cabe, ni empezar
     if (disk(src.parent().unwrap_or(Path::new("."))).1 as f64) < size as f64 * 0.65 {
-        return Outcome::Skipped("Falta espacio en el disco".into());
+        return Outcome::Skipped(t("no_space").into());
     }
-    let Some(info) = probe(src) else { return Outcome::Failed("No se pudo leer el video".into()) };
+    let Some(info) = probe(src) else { return Outcome::Failed(t("cant_read").into()) };
     if std::fs::create_dir_all(&outdir).is_err() {
-        return Outcome::Failed("No se pudo crear la carpeta comprimidos".into());
+        return Outcome::Failed(t("cant_mkdir").into());
     }
 
     let mut c = cmd("ffmpeg");
@@ -209,7 +210,7 @@ pub fn compress(src: &Path, job: &Job, stop: &AtomicBool, progress: impl Fn(f32)
     }
     c.args(["-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-movflags", "+faststart", "-f", "mp4"]).arg(&part);
     let Ok(mut child) = c.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else {
-        return Outcome::Failed("No se encuentra ffmpeg".into());
+        return Outcome::Failed(t("no_ffmpeg").into());
     };
 
     let stderr = child.stderr.take().unwrap();
@@ -236,19 +237,19 @@ pub fn compress(src: &Path, job: &Job, stop: &AtomicBool, progress: impl Fn(f32)
         return Outcome::Cancelled;
     }
     if !status.is_ok_and(|s| s.success()) {
-        return Outcome::Failed(fail(if last_error.is_empty() { "ffmpeg falló".into() } else { last_error }));
+        return Outcome::Failed(fail(if last_error.is_empty() { t("ffmpeg_failed").into() } else { last_error }));
     }
     let out_dur = probe(&part).map(|p| p.duration).unwrap_or(0.0);
     if (out_dur - info.duration).abs() > 2f64.max(info.duration * 0.01) {
-        return Outcome::Failed(fail(format!("La duración no coincide ({out_dur:.0}s de {:.0}s)", info.duration)));
+        return Outcome::Failed(fail(tf("duration", &[&format!("{out_dur:.0}"), &format!("{:.0}", info.duration)])));
     }
     let out = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(u64::MAX);
     if out >= size {
         fail(String::new());
-        return Outcome::Skipped("Ya está optimizado".into());
+        return Outcome::Skipped(t("optimized").into());
     }
     if std::fs::rename(&part, &dst).is_err() {
-        return Outcome::Failed(fail("No se pudo renombrar el resultado".into()));
+        return Outcome::Failed(fail(t("cant_rename").into()));
     }
     Outcome::Done(out)
 }

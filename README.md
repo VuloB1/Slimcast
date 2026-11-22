@@ -2,55 +2,58 @@
 
 <h1 align="center">Slimcast</h1>
 
-<p align="center">Comprime tus grabaciones y directos de OBS a HEVC y recupera espacio en el disco, sin perder calidad visible.</p>
+<p align="center">Compress your OBS recordings and streams to HEVC and get your disk space back, with no visible quality loss.</p>
 
-<p align="center"><a href="https://github.com/VuloB1/Slimcast/releases/latest"><b>Descargar para Windows</b></a></p>
+<p align="center"><a href="https://github.com/VuloB1/Slimcast/releases/latest"><b>Download for Windows</b></a> · <a href="README.es.md">Español</a></p>
 
 ![Slimcast](docs/screenshot.png)
 
-## Qué hace
+## What it does
 
-- Convierte tus videos a **HEVC (H.265)** con la gráfica que elijas: NVIDIA (NVENC), AMD (AMF), Intel (Quick Sync, sin probar) o la CPU.
-- Detecta las gráficas del equipo y prueba cada una antes de ofrecerla.
-- **Nunca toca los originales.** El resultado va a una carpeta `comprimidos` junto al video, y se descarta si no queda más pequeño o si su duración no coincide.
-- Antes de empezar comprueba que haya espacio libre en el disco, y muestra cuánto liberarías si borras los originales.
-- Copia el audio tal cual (todas las pistas) y, si quieres, baja a 30 fps.
-- Muestra una **miniatura** de cada video para reconocerlo de un vistazo.
-- **Scroll suave** y fluido aunque añadas una carpeta con cientos de videos, con barras de progreso que avanzan de forma continua.
-- **Se actualiza sola**: avisa cuando hay una versión nueva y la instala con un clic.
-- Es ligera: está hecha en Rust con [GPUI](https://www.gpui.rs/) y usa unos 50 MB de RAM.
+- Converts your videos to **HEVC (H.265)** on the GPU you choose: NVIDIA (NVENC), AMD (AMF), Intel (Quick Sync, untested) or the CPU.
+- Detects the GPUs in your PC and tests each one before offering it.
+- **Never touches the originals.** Output goes to a `comprimidos` folder next to the video, and it's discarded if it isn't smaller or its duration doesn't match.
+- Checks there's enough free disk space before starting, and shows how much you'd free up by deleting the originals.
+- Copies the audio as is (every track) and can lower the video to 30 fps.
+- Shows a **thumbnail** of each video so you can spot it at a glance.
+- **Smooth scrolling**, even with a folder of hundreds of videos, and progress bars that move continuously.
+- **Updates itself**: it tells you when a new version is out and installs it in one click.
+- In **6 languages**: English, Spanish, Portuguese, Japanese, Chinese and Korean. It follows your Windows language (or set `SLIMCAST_LANG=en|es|pt|ja|zh|ko`).
+- Lightweight: built in Rust with [GPUI](https://www.gpui.rs/), it uses about 50 MB of RAM.
 
-Con un directo real de 30,7 GB, el resultado fue de 13,2 GB (−57 %).
+A real 30.7 GB stream came out at 13.2 GB (−57%).
 
-## Instalación
+## Install
 
-Descarga `Slimcast-x.y.z-setup.exe` desde [Releases](https://github.com/VuloB1/Slimcast/releases/latest) y ejecútalo. No necesita permisos de administrador y ya trae ffmpeg incluido.
+Download `Slimcast-x.y.z-setup.exe` from [Releases](https://github.com/VuloB1/Slimcast/releases/latest) and run it. It doesn't need admin rights and ffmpeg is included.
 
-### Actualizaciones
+### Updates
 
-Al abrirse, Slimcast consulta la última release de este repositorio. Si hay una versión más nueva, aparece un aviso con el botón **Actualizar**: descarga el instalador, actualiza sin preguntar nada y vuelve a abrir el programa. Si estás comprimiendo, espera a que termine.
+When it opens, Slimcast checks the latest release of this repository. If there's a newer version, a notice with an **Update** button appears: it downloads the installer, updates silently and reopens the app. If a compression is running, it waits until it's done.
 
-- Solo instala archivos de las [releases de VuloB1/Slimcast](https://github.com/VuloB1/Slimcast/releases).
-- Sin conexión no pasa nada: la app funciona igual.
-- Las versiones 1.0.0 y 1.1.0 no tienen actualizador. Si tienes una de ellas, instala la última a mano una vez.
+- It only installs files from the [VuloB1/Slimcast releases](https://github.com/VuloB1/Slimcast/releases).
+- Offline is fine: the app works the same.
+- Versions 1.0.0 and 1.1.0 have no updater. If you have one of them, install the latest by hand once.
 
-> NVIDIA: probado con el driver 582. Las versiones de ffmpeg posteriores a la 8.0.1 piden el driver 610 o superior, por eso la app usa la 8.0.1.
+> NVIDIA: tested with driver 582. ffmpeg releases after 8.0.1 require driver 610 or newer, so the app ships 8.0.1.
 
-## Compilar desde el código
+## Build from source
 
-Requisitos: [Rust](https://rustup.rs/), [Inno Setup 6](https://jrsoftware.org/isinfo.php) y ffmpeg en el PATH (`winget install Gyan.FFmpeg`).
+Requirements: [Rust](https://rustup.rs/), [Inno Setup 6](https://jrsoftware.org/isinfo.php) and ffmpeg on the PATH (`winget install Gyan.FFmpeg`).
 
 ```powershell
-cargo run --release                                          # la app, usando el ffmpeg del PATH
-powershell -ExecutionPolicy Bypass -File installer\build.ps1 # genera dist\Slimcast-<versión>-setup.exe
+cargo run --release                                          # the app, using ffmpeg from the PATH
+powershell -ExecutionPolicy Bypass -File installer\build.ps1 # builds dist\Slimcast-<version>-setup.exe
 ```
 
-Para publicar una versión nueva, sube `version` en `Cargo.toml`, genera el instalador y crea una release con la etiqueta `vX.Y.Z` y el `Slimcast-X.Y.Z-setup.exe` adjunto. Las copias instaladas la detectan al abrirse.
+To publish a new version, bump `version` in `Cargo.toml`, build the installer and create a release tagged `vX.Y.Z` with `Slimcast-X.Y.Z-setup.exe` attached. Installed copies pick it up when they open.
 
-`installer\art.ps1` vuelve a generar el icono y las imágenes del instalador.
+Interface texts live in `src/i18n.rs`, one row per text with every language side by side.
 
-También hay un script de línea de comandos más simple, `comprimir.py` (solo NVENC o CPU): arrastra videos encima de `comprimir.bat`.
+`installer\art.ps1` regenerates the icon and the installer artwork.
 
-## Licencia
+There's also a simpler command-line script, `comprimir.py` (NVENC or CPU only): drag videos onto `comprimir.bat`.
 
-[GPL-3.0](LICENSE). El instalador incluye [FFmpeg](https://ffmpeg.org/) 8.0.1 (build *full* de [gyan.dev](https://www.gyan.dev/ffmpeg/builds/)), que también se distribuye bajo GPL-3.0. Su código fuente está en [FFmpeg/FFmpeg@n8.0.1](https://github.com/FFmpeg/FFmpeg/tree/n8.0.1), y las bibliotecas que lleva la build se listan en [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
+## License
+
+[GPL-3.0](LICENSE). The installer bundles [FFmpeg](https://ffmpeg.org/) 8.0.1 (the *full* build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/)), also distributed under GPL-3.0. Its source code is at [FFmpeg/FFmpeg@n8.0.1](https://github.com/FFmpeg/FFmpeg/tree/n8.0.1), and the libraries in the build are listed on [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).

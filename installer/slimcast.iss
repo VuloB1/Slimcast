@@ -36,6 +36,11 @@ CloseApplications=yes
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
+Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
+; el chino simplificado no viene con Inno Setup 6.7; copiado de jrsoftware/issrc
+Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
+Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"

@@ -54,9 +54,9 @@ fn numbers(v: &str) -> Vec<u32> {
 pub fn install(r: &Release) -> Result<(), String> {
     let setup: PathBuf = std::env::temp_dir().join(format!("Slimcast-{}-setup.exe", r.version));
     let ok = curl().args(["--max-time", "900", "-o"]).arg(&setup).arg(&r.url).status().is_ok_and(|s| s.success());
-    if !ok { return Err("No se pudo descargar la actualización".into()) }
+    if !ok { return Err(crate::i18n::t("download_failed").into()) }
     Command::new(&setup).args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]).spawn()
-        .map(|_| ()).map_err(|_| "No se pudo abrir el instalador".into())
+        .map(|_| ()).map_err(|_| crate::i18n::t("setup_failed").into())
 }
 
 #[cfg(test)]
