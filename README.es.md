@@ -37,6 +37,8 @@ Ejecuta `Slimcast-x.y.z-setup.exe`. No necesita permisos de administrador.
 
 ### Linux
 
+![Slimcast en Linux](docs/screenshot-linux.png)
+
 Dos opciones, las dos de 64 bits (x86_64):
 
 - **AppImage**: un solo archivo, sin instalar nada. Hazlo ejecutable y ábrelo:
