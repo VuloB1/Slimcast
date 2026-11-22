@@ -6,7 +6,7 @@ use encode::{Device, Encoder, Job, Outcome};
 use gpui::{
     App, Application, Bounds, ClickEvent, Context, Div, ExternalPaths, FontWeight,
     ObjectFit, PathPromptOptions, PromptLevel, ScrollWheelEvent, SharedString, Stateful, StyledImage, Window,
-    WindowBounds, WindowOptions, canvas, div, img, prelude::*, px, relative, rgb, rgba, size,
+    WindowBounds, WindowControlArea, WindowOptions, canvas, div, img, prelude::*, px, relative, rgb, rgba, size,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -281,14 +281,34 @@ impl Render for Compresor {
         }
         if !settled { window.request_animation_frame() }
 
-        let header = div().flex().items_center().justify_between().h(px(48.)).px(px(20.))
-            .border_b_1().border_color(rgba(LINE))
-            .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child("Slimcast"))
-            .when(has, |h| h.child(div().flex().gap(px(8.))
+        // barra de título propia: logo, nombre y versión arrastran la ventana; los botones de Windows van a la derecha
+        // el icono de la app dibujado a mano, con sus proporciones: barra gris larga y barra ámbar corta
+        let mark = div().size(px(28.)).flex_none().flex().flex_col().justify_center().gap(px(3.)).pl(px(5.))
+            .rounded(px(7.)).bg(rgb(CARD)).border_1().border_color(rgba(LINE))
+            .child(div().w(px(17.)).h(px(4.)).rounded(px(1.)).bg(rgb(0x55555b)))
+            .child(div().w(px(8.)).h(px(4.)).rounded(px(1.)).bg(rgb(ACCENT)));
+        let caption = |id: &'static str, glyph: &'static str, area: WindowControlArea, close: bool|
+            div().id(id).w(px(46.)).h_full().flex().items_center().justify_center()
+                .font_family("Segoe MDL2 Assets").text_size(px(10.)).text_color(rgb(TEXT2))
+                .window_control_area(area)
+                .when(close, |b| b.hover(|s| s.bg(rgb(0xc42b1c)).text_color(rgb(0xffffff))))
+                .when(!close, |b| b.hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT))))
+                .child(glyph);
+        let header = div().flex().items_center().h(px(44.)).bg(rgb(DEEP)).border_b_1().border_color(rgba(LINE))
+            .child(div().flex_1().h_full().flex().items_center().gap(px(10.)).pl(px(16.))
+                .window_control_area(WindowControlArea::Drag)
+                .child(mark)
+                .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child("Slimcast"))
+                .child(div().font_family(MONO).text_size(px(11.)).text_color(rgb(MUTED))
+                    .child(concat!("v", env!("CARGO_PKG_VERSION")))))
+            .when(has, |h| h.child(div().flex().gap(px(8.)).pr(px(12.))
                 .child(button("add-files", "Añadir videos", !running)
                     .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx)))))
                 .child(button("add-folder", "Añadir carpeta", !running)
-                    .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))));
+                    .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))))
+            .child(caption("min", "\u{e921}", WindowControlArea::Min, false))
+            .child(caption("max", if window.is_maximized() { "\u{e923}" } else { "\u{e922}" }, WindowControlArea::Max, false))
+            .child(caption("close", "\u{e8bb}", WindowControlArea::Close, true));
 
         let disk = self.disk.clone().map(|(drive, total, free)| {
             let pending: u64 = items.iter().filter(|i| matches!(i.state, State::Queued | State::Running(_))).map(|i| i.size).sum();
@@ -475,7 +495,7 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(1040.), px(440.))),
-            titlebar: Some(gpui::TitlebarOptions { title: Some("Slimcast".into()), ..Default::default() }),
+            titlebar: Some(gpui::TitlebarOptions { title: Some("Slimcast".into()), appears_transparent: true, ..Default::default() }),
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {

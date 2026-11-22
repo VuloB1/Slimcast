@@ -15,6 +15,8 @@
 - **Nunca toca los originales.** El resultado va a una carpeta `comprimidos` junto al video, y se descarta si no queda más pequeño o si su duración no coincide.
 - Antes de empezar comprueba que haya espacio libre en el disco, y muestra cuánto liberarías si borras los originales.
 - Copia el audio tal cual (todas las pistas) y, si quieres, baja a 30 fps.
+- Muestra una **miniatura** de cada video para reconocerlo de un vistazo.
+- **Scroll suave** y fluido aunque añadas una carpeta con cientos de videos, con barras de progreso que avanzan de forma continua.
 - **Se actualiza sola**: avisa cuando hay una versión nueva y la instala con un clic.
 - Es ligera: está hecha en Rust con [GPUI](https://www.gpui.rs/) y usa unos 50 MB de RAM.
 
