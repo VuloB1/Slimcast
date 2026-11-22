@@ -15,6 +15,7 @@
 - **Nunca toca los originales.** El resultado va a una carpeta `comprimidos` junto al video, y se descarta si no queda más pequeño o si su duración no coincide.
 - Antes de empezar comprueba que haya espacio libre en el disco, y muestra cuánto liberarías si borras los originales.
 - Copia el audio tal cual (todas las pistas) y, si quieres, baja a 30 fps.
+- **Se actualiza sola**: avisa cuando hay una versión nueva y la instala con un clic.
 - Es ligera: está hecha en Rust con [GPUI](https://www.gpui.rs/) y usa unos 50 MB de RAM.
 
 Con un directo real de 30,7 GB, el resultado fue de 13,2 GB (−57 %).
@@ -22,6 +23,14 @@ Con un directo real de 30,7 GB, el resultado fue de 13,2 GB (−57 %).
 ## Instalación
 
 Descarga `Slimcast-x.y.z-setup.exe` desde [Releases](https://github.com/VuloB1/Slimcast/releases/latest) y ejecútalo. No necesita permisos de administrador y ya trae ffmpeg incluido.
+
+### Actualizaciones
+
+Al abrirse, Slimcast consulta la última release de este repositorio. Si hay una versión más nueva, aparece un aviso con el botón **Actualizar**: descarga el instalador, actualiza sin preguntar nada y vuelve a abrir el programa. Si estás comprimiendo, espera a que termine.
+
+- Solo instala archivos de las [releases de VuloB1/Slimcast](https://github.com/VuloB1/Slimcast/releases).
+- Sin conexión no pasa nada: la app funciona igual.
+- Las versiones 1.0.0 y 1.1.0 no tienen actualizador. Si tienes una de ellas, instala la última a mano una vez.
 
 > NVIDIA: probado con el driver 582. Las versiones de ffmpeg posteriores a la 8.0.1 piden el driver 610 o superior, por eso la app usa la 8.0.1.
 
@@ -33,6 +42,8 @@ Requisitos: [Rust](https://rustup.rs/), [Inno Setup 6](https://jrsoftware.org/is
 cargo run --release                                          # la app, usando el ffmpeg del PATH
 powershell -ExecutionPolicy Bypass -File installer\build.ps1 # genera dist\Slimcast-<versión>-setup.exe
 ```
+
+Para publicar una versión nueva, sube `version` en `Cargo.toml`, genera el instalador y crea una release con la etiqueta `vX.Y.Z` y el `Slimcast-X.Y.Z-setup.exe` adjunto. Las copias instaladas la detectan al abrirse.
 
 `installer\art.ps1` vuelve a generar el icono y las imágenes del instalador.
 
