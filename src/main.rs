@@ -35,11 +35,9 @@ const OK: u32 = 0x4cc38a;
 const TRACK: u32 = 0x2c2c2f; // más claro que RAISED para que la barra se vea con la fila resaltada
 const USED: u32 = 0x47474c;
 const QUEUED: u32 = 0x707077;
-#[cfg(windows)]
-const MONO: &str = "Cascadia Mono";
-#[cfg(not(windows))]
-const MONO: &str = "DejaVu Sans Mono";
 const ROW_H: f32 = 52.;
+const SHADOW: f32 = 10.; // margen transparente para la sombra cuando Slimcast dibuja su propio marco (Linux)
+const RADIUS: f32 = 10.; // esquinas de la ventana en ese caso
 const ROW_GAP: f32 = 2.;
 
 #[derive(Clone)]
@@ -322,6 +320,7 @@ impl Render for Compresor {
         // En Windows el sistema mueve la ventana y gestiona los botones (window_control_area); en Linux con
         // decoraciones propias lo hace Slimcast. Si el escritorio pone su propia barra, sobran los botones.
         let own_frame = cfg!(windows) || matches!(window.window_decorations(), gpui::Decorations::Client { .. });
+        let floating = floating_frame(window);
         let caption = |id: &'static str, glyph: &'static str, area: WindowControlArea, close: bool| {
             let group = SharedString::from(format!("{id}-g"));
             div().id(id).group(group.clone()).w(px(46.)).h_full().flex().items_center().justify_center()
@@ -346,7 +345,7 @@ impl Render for Compresor {
                     .on_mouse_down(MouseButton::Right, |e: &MouseDownEvent, window, _| window.show_window_menu(e.position)))
                 .child(mark)
                 .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child("Slimcast"))
-                .child(div().font_family(MONO).text_size(px(11.)).text_color(rgb(MUTED))
+                .child(div().font_family(i18n::mono()).text_size(px(11.)).text_color(rgb(MUTED))
                     .child(concat!("v", env!("CARGO_PKG_VERSION")))))
             .when(has, |h| h.child(div().flex().gap(px(8.)).pr(px(12.))
                 .child(button("add-files", "film", t("add_videos"), !running)
@@ -369,7 +368,7 @@ impl Render for Compresor {
                 .border_1().border_color(rgba(LINE))
                 .child(div().flex().items_baseline().gap(px(10.))
                     .child(div().text_color(rgb(TEXT2)).child(tf("disk", &[&drive])))
-                    .child(div().font_family(MONO).text_size(px(20.)).font_weight(FontWeight::MEDIUM).child(gb(free)))
+                    .child(div().font_family(i18n::mono()).text_size(px(20.)).font_weight(FontWeight::MEDIUM).child(gb(free)))
                     .child(div().text_color(rgb(TEXT2)).child(tf("free_of", &[&gb(total)])))
                     .when(freed > 0, |d| d.child(div().ml(px(8.)).text_color(rgb(ACCENT))
                         .child(tf("freed", &[&gb(freed)]))))
@@ -409,7 +408,7 @@ impl Render for Compresor {
                     .child(div().truncate().text_size(px(13.)).child(it.name.clone()))
                     .child(div().h(px(3.)).rounded(px(2.)).bg(rgb(TRACK)).overflow_hidden()
                         .child(div().h_full().w(relative(shown.clamp(0.0, 1.0))).bg(rgb(bar_color)))))
-                .child(div().w(px(200.)).flex_none().flex().justify_end().font_family(MONO).text_size(px(12.))
+                .child(div().w(px(200.)).flex_none().flex().justify_end().font_family(i18n::mono()).text_size(px(12.))
                     .text_color(rgb(TEXT2)).child(sizes))
                 .child(div().w(px(180.)).flex_none().truncate().text_size(px(13.)).text_color(rgb(state_color)).child(state))
                 .child(div().id(("rm", i)).group("rm").size(px(24.)).flex_none().flex().items_center().justify_center().rounded(px(6.))
@@ -447,7 +446,7 @@ impl Render for Compresor {
             .when(has, |q| q
                 .child(div().flex().items_baseline().justify_between().px(px(16.)).pt(px(10.)).pb(px(6.)).text_color(rgb(TEXT2))
                     .child(div().flex().gap(px(8.)).items_baseline().child(t("queue"))
-                        .child(div().font_family(MONO).text_size(px(12.)).text_color(rgb(MUTED))
+                        .child(div().font_family(i18n::mono()).text_size(px(12.)).text_color(rgb(MUTED))
                             .child(tf("count", &[&done, &items.len()]))))
                     .child(div().text_size(px(12.)).text_color(rgb(MUTED))
                         .child(t("note"))))
@@ -508,15 +507,16 @@ impl Render for Compresor {
             .child(action);
 
         let ffmpeg_missing = self.devices.as_ref().is_some_and(|d| d.iter().all(|d| !d.ok));
-        div().id("root").size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family(i18n::font()).text_size(px(14.))
-            .on_drop(cx.listener(|v, paths: &ExternalPaths, _, cx| {
-                if !v.running.load(Ordering::Relaxed) { v.add(paths.paths().to_vec(), cx); cx.notify() }
-            }))
-            .child(header)
+        let app = div().id("app").size_full().flex().flex_col().bg(rgb(BG))
+            // ventana flotante con marco propio (GNOME): esquinas redondeadas, borde fino y sombra en el margen
+            .when(floating, |d| d.rounded(px(RADIUS)).border_1().border_color(rgba(LINE)).shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0., 0., 0., 0.5), offset: gpui::point(px(0.), px(2.)), blur_radius: px(8.), spread_radius: px(0.),
+            }]))
+            .child(header.when(floating, |h| h.rounded_t(px(RADIUS - 1.))))
             .child(div().flex_1().min_h(px(0.)).flex().flex_col().gap(px(12.)).p(px(16.))
                 .when(ffmpeg_missing, |m| m.child(div().px(px(16.)).py(px(10.)).rounded(px(10.)).bg(rgba(0xe5484d1a))
                     .border_1().border_color(rgba(0xe5484d4d)).text_color(rgb(0xf2a7a9))
-                    .child(t("no_ffmpeg_banner"))))
+                    .child(t(if cfg!(windows) { "no_ffmpeg_banner" } else { "no_ffmpeg_banner_linux" }))))
                 .when_some(self.update.clone(), |m, r| {
                     let busy = self.update_msg.as_ref().is_some_and(|m| m.as_ref() == t("downloading"));
                     let enabled = !running && !busy;
@@ -532,21 +532,31 @@ impl Render for Compresor {
                 })
                 .children(disk)
                 .child(queue))
-            .child(footer)
-            .relative()
-            .children(resize_handles(window))
+            .child(footer.when(floating, |f| f.rounded_b(px(RADIUS - 1.))));
+        div().id("root").size_full().relative().text_color(rgb(TEXT)).font_family(i18n::font()).text_size(px(14.))
+            .when(floating, |d| d.p(px(SHADOW)))
+            .on_drop(cx.listener(|v, paths: &ExternalPaths, _, cx| {
+                if !v.running.load(Ordering::Relaxed) { v.add(paths.paths().to_vec(), cx); cx.notify() }
+            }))
+            .child(app)
+            .when(floating, |d| d.children(resize_handles()))
     }
 }
 
-/// Bordes para redimensionar cuando Slimcast dibuja su propio marco (Linux sin barra del escritorio).
-/// shortcut: sin sombra ni esquinas redondeadas como Zed; añadirlas si en GNOME se ve demasiado plano
-fn resize_handles(window: &Window) -> Vec<gpui::AnyElement> {
-    let gpui::Decorations::Client { tiling } = window.window_decorations() else { return Vec::new() };
-    if cfg!(windows) || window.is_maximized() || tiling.top || tiling.bottom || tiling.left || tiling.right {
-        return Vec::new();
-    }
+/// true si Slimcast dibuja su propio marco (Linux sin barra del escritorio) y la ventana flota: ni maximizada
+/// ni ajustada a un lado. Entonces lleva margen de sombra y esquinas redondeadas; si no, va recta hasta el borde.
+/// Avisa al compositor del margen, que es transparente y no cuenta como parte de la ventana.
+fn floating_frame(window: &mut Window) -> bool {
+    let gpui::Decorations::Client { tiling } = window.window_decorations() else { return false };
+    let floating = cfg!(not(windows)) && !window.is_maximized() && !(tiling.top || tiling.bottom || tiling.left || tiling.right);
+    window.set_client_inset(px(if floating { SHADOW } else { 0. }));
+    floating
+}
+
+/// Bordes para redimensionar, en el margen de sombra (fuera del contenido).
+fn resize_handles() -> Vec<gpui::AnyElement> {
     use gpui::{CursorStyle as C, ResizeEdge as E};
-    let (edge, corner) = (px(5.), px(10.));
+    let (edge, corner) = (px(SHADOW), px(SHADOW + 8.));
     let handle = |id: &'static str, e: E, cursor: C| div().id(id).absolute().cursor(cursor)
         .on_mouse_down(MouseButton::Left, move |_, window, _| window.start_window_resize(e));
     vec![
@@ -581,6 +591,8 @@ fn confirm_close(running: &Arc<AtomicBool>, stop: &Arc<AtomicBool>, window: &mut
 
 fn main() {
     Application::new().with_assets(Icons).run(|cx: &mut App| {
+        #[cfg(not(windows))]
+        i18n::init_fonts(&cx.text_system().all_font_names());
         let running = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let bounds = Bounds::centered(None, size(px(1100.), px(640.)), cx);
@@ -591,6 +603,8 @@ fn main() {
             // en Linux la barra de título es la de Slimcast (el escritorio puede imponer la suya)
             window_decorations: cfg!(not(windows)).then_some(gpui::WindowDecorations::Client),
             app_id: Some("io.github.VuloB1.Slimcast".into()), // en Linux enlaza la ventana con su .desktop e icono
+            // el margen de sombra tiene que ser transparente; el contenido pinta su propio fondo opaco
+            window_background: if cfg!(windows) { gpui::WindowBackgroundAppearance::Opaque } else { gpui::WindowBackgroundAppearance::Transparent },
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {

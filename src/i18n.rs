@@ -52,8 +52,38 @@ pub fn font() -> &'static str {
         Lang::Ja => "Noto Sans CJK JP",
         Lang::Zh => "Noto Sans CJK SC",
         Lang::Ko => "Noto Sans CJK KR",
-        _ => "Noto Sans",
+        _ => FONTS.get().map_or(SANS[0], |f| f.0),
     }
+}
+
+/// Fuente monoespaciada para tamaños y contadores.
+#[cfg(windows)]
+pub fn mono() -> &'static str {
+    "Cascadia Mono"
+}
+
+#[cfg(not(windows))]
+pub fn mono() -> &'static str {
+    FONTS.get().map_or(MONO[0], |f| f.1)
+}
+
+// Cada distro trae fuentes distintas (Fedora no instala DejaVu; Ubuntu no siempre Noto): al arrancar se
+// elige la primera instalada de cada lista
+#[cfg(not(windows))]
+const SANS: &[&str] = &["Noto Sans", "Cantarell", "Ubuntu", "DejaVu Sans", "Liberation Sans"];
+#[cfg(not(windows))]
+const MONO: &[&str] = &["DejaVu Sans Mono", "Noto Sans Mono", "Adwaita Mono", "Ubuntu Mono", "Liberation Mono", "Source Code Pro"];
+#[cfg(not(windows))]
+static FONTS: OnceLock<(&'static str, &'static str)> = OnceLock::new();
+
+#[cfg(not(windows))]
+pub fn init_fonts(installed: &[String]) {
+    let _ = FONTS.set((first_installed(installed, SANS), first_installed(installed, MONO)));
+}
+
+#[cfg(not(windows))]
+fn first_installed(installed: &[String], wanted: &[&'static str]) -> &'static str {
+    wanted.iter().copied().find(|w| installed.iter().any(|i| i == w)).unwrap_or(wanted[0])
 }
 
 pub fn t(key: &str) -> &'static str {
@@ -116,7 +146,13 @@ const TEXTS: &[[&str; 7]] = &[
         "ffmpeg が見つかりません。Slimcast を再インストールするか、次のコマンドで ffmpeg をインストールしてください  winget install Gyan.FFmpeg --version 8.0.1",
         "找不到 ffmpeg。请重新安装 Slimcast，或用以下命令安装 ffmpeg  winget install Gyan.FFmpeg --version 8.0.1",
         "ffmpeg를 찾을 수 없습니다. Slimcast를 다시 설치하거나 다음 명령으로 ffmpeg를 설치하세요  winget install Gyan.FFmpeg --version 8.0.1"],
-    ["update_available", "Slimcast {} available", "Slimcast {} disponible", "Slimcast {} disponível",
+    ["no_ffmpeg_banner_linux", "ffmpeg not found. Reinstall Slimcast or install ffmpeg from your distribution's packages",
+        "No se encuentra ffmpeg. Reinstala Slimcast o instala ffmpeg desde los paquetes de tu distribución",
+        "ffmpeg não encontrado. Reinstale o Slimcast ou instale o ffmpeg pelos pacotes da sua distribuição",
+        "ffmpeg が見つかりません。Slimcast を再インストールするか、ディストリビューションのパッケージから ffmpeg をインストールしてください",
+        "找不到 ffmpeg。请重新安装 Slimcast，或从发行版的软件包中安装 ffmpeg",
+        "ffmpeg를 찾을 수 없습니다. Slimcast를 다시 설치하거나 배포판 패키지에서 ffmpeg를 설치하세요"],
+    ["update_available","Slimcast {} available", "Slimcast {} disponible", "Slimcast {} disponível",
         "Slimcast {} が利用可能です", "Slimcast {} 已发布", "Slimcast {} 사용 가능"],
     ["update_restart", "Slimcast will close and reopen updated", "Slimcast se cerrará y volverá a abrirse ya actualizado",
         "O Slimcast vai fechar e reabrir já atualizado", "Slimcast は終了し、更新後に再起動します",
@@ -169,6 +205,15 @@ mod tests {
                 assert_eq!(text.matches("{}").count(), n, "{}: {text}", row[0]);
             }
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn picks_the_first_installed_font() {
+        let fedora: Vec<String> = ["Adwaita Sans", "Adwaita Mono", "Noto Sans", "Noto Sans CJK JP"].map(String::from).into();
+        assert_eq!(first_installed(&fedora, MONO), "Adwaita Mono");
+        assert_eq!(first_installed(&fedora, SANS), "Noto Sans");
+        assert_eq!(first_installed(&[], MONO), "DejaVu Sans Mono"); // sin coincidencias: la primera, y que el sistema sustituya
     }
 
     #[test]
