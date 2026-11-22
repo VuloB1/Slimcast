@@ -1,11 +1,12 @@
 #![windows_subsystem = "windows"] // sin consola detrás de la ventana
 mod encode;
+mod update;
 
 use encode::{Device, Encoder, Job, Outcome};
 use gpui::{
-    Animation, AnimationExt, App, Application, Bounds, ClickEvent, Context, Div, ExternalPaths, FontWeight,
+    App, Application, Bounds, ClickEvent, Context, Div, ExternalPaths, FontWeight,
     ObjectFit, PathPromptOptions, PromptLevel, ScrollWheelEvent, SharedString, Stateful, StyledImage, Window,
-    WindowBounds, WindowOptions, canvas, div, ease_out_quint, img, prelude::*, px, relative, rgb, rgba, size,
+    WindowBounds, WindowOptions, canvas, div, img, prelude::*, px, relative, rgb, rgba, size,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -50,7 +51,14 @@ struct Item {
     name: SharedString,
     size: u64,
     state: State,
-    thumb: Option<PathBuf>,
+    born: Instant,                     // para la animación de entrada
+    thumb: Option<(PathBuf, Instant)>, // miniatura y cuándo llegó (para el fundido)
+}
+
+/// Avance 0..1 de una animación de `ms` que empezó en `start`, con salida suave (quint).
+fn fade(start: Instant, now: Instant, ms: f32) -> f32 {
+    let t = (now.duration_since(start).as_secs_f32() * 1000. / ms).min(1.);
+    1. - (1. - t).powi(5)
 }
 
 struct Compresor {
@@ -68,6 +76,8 @@ struct Compresor {
     list_h: Rc<Cell<f32>>,
     shown: HashMap<PathBuf, f32>, // progreso que se dibuja; persigue al real
     last_frame: Instant,
+    update: Option<update::Release>, // versión nueva en GitHub
+    update_msg: Option<SharedString>, // "Descargando…" o el error
 }
 
 fn gb(n: u64) -> String {
@@ -109,9 +119,14 @@ impl Compresor {
                 cx.notify();
             }).ok();
         }).detach();
+        cx.spawn(async move |this, cx| {
+            let release = cx.background_executor().spawn(async { update::check() }).await;
+            this.update(cx, |v, cx| { v.update = release; cx.notify() }).ok();
+        }).detach();
         let mut v = Self {
             items: Default::default(), running, stop, devices: None, device: 0, calidad: 28, cap30: false, disk: None,
             scroll_y: 0., scroll_target: 0., list_h: Default::default(), shown: HashMap::new(), last_frame: Instant::now(),
+            update: None, update_msg: None,
         };
         v.add(std::env::args().skip(1).map(PathBuf::from).collect(), cx); // videos soltados sobre el .exe
         v
@@ -125,7 +140,7 @@ impl Compresor {
                 let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
                 let name = p.file_name().unwrap_or_default().to_string_lossy().to_string().into();
                 fresh.push(p.clone());
-                items.push(Item { path: p, name, size, state: State::Queued, thumb: None });
+                items.push(Item { path: p, name, size, state: State::Queued, born: Instant::now(), thumb: None });
             }
         }
         drop(items);
@@ -138,7 +153,7 @@ impl Compresor {
                 let ok = cx.background_executor().spawn(async move { o.exists() || encode::thumbnail(&s, &o) }).await;
                 if !ok { continue }
                 let alive = this.update(cx, |v, cx| {
-                    if let Some(it) = v.items.lock().unwrap().iter_mut().find(|i| i.path == src) { it.thumb = Some(out) }
+                    if let Some(it) = v.items.lock().unwrap().iter_mut().find(|i| i.path == src) { it.thumb = Some((out, Instant::now())) }
                     cx.notify();
                 });
                 if alive.is_err() { break }
@@ -153,6 +168,18 @@ impl Compresor {
             let (total, free) = encode::disk(dir);
             (drive, total, free)
         });
+    }
+
+    fn install_update(&mut self, cx: &mut Context<Self>) {
+        let Some(release) = self.update.clone() else { return };
+        self.update_msg = Some("Descargando…".into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            match cx.background_executor().spawn(async move { update::install(&release) }).await {
+                Ok(()) => { cx.update(|cx| cx.quit()).ok(); } // el instalador cierra, actualiza y vuelve a abrir
+                Err(e) => { this.update(cx, |v, cx| { v.update_msg = Some(e.into()); cx.notify() }).ok(); }
+            }
+        }).detach();
     }
 
     fn pick(&mut self, folder: bool, cx: &mut Context<Self>) {
@@ -239,8 +266,18 @@ impl Render for Compresor {
                 State::Finished(Outcome::Done(out)) => *out as f32 / it.size.max(1) as f32,
                 _ => 0.0,
             };
-            let v = self.shown.entry(it.path.clone()).or_insert(target);
-            settled &= ease(v, target, dt, 6., 0.001);
+            match self.shown.get_mut(&it.path) {
+                Some(v) => settled &= ease(v, target, dt, 6., 0.001),
+                None => { self.shown.insert(it.path.clone(), target); }
+            }
+        }
+        // solo se construyen las filas a la vista (más una de margen): con cientos de videos el scroll sigue fluido
+        let stride = ROW_H + ROW_GAP;
+        let first = ((self.scroll_y / stride) as usize).min(items.len());
+        let last = (((self.scroll_y + view_h) / stride).ceil() as usize + 1).min(items.len());
+        for it in &items[first..last] {
+            let thumb_in = it.thumb.as_ref().is_none_or(|(_, at)| fade(*at, now, 300.) >= 1.);
+            settled &= fade(it.born, now, 260.) >= 1. && thumb_in;
         }
         if !settled { window.request_animation_frame() }
 
@@ -279,7 +316,7 @@ impl Render for Compresor {
                     .child(meter_part(freed as f64 / t, ACCENT)))
         });
 
-        let rows: Vec<_> = items.iter().enumerate().map(|(i, it)| {
+        let rows: Vec<_> = items.iter().enumerate().skip(first).take(last - first).map(|(i, it)| {
             let shown = self.shown.get(&it.path).copied().unwrap_or(0.0);
             let (bar_color, sizes, state, state_color) = match &it.state {
                 State::Queued => (TEXT2, gb(it.size), "En cola".to_string(), MUTED),
@@ -291,12 +328,12 @@ impl Render for Compresor {
                 State::Finished(Outcome::Cancelled) => (TEXT2, gb(it.size), "Cancelado".into(), MUTED),
             };
             let live = matches!(it.state, State::Running(_));
-            let key = it.path.display().to_string();
+            // animaciones calculadas a mano: con with_animation se repetirían cada vez que una fila vuelve a la vista
+            let enter = fade(it.born, now, 260.);
             let thumb = div().w(px(64.)).h(px(36.)).flex_none().rounded(px(4.)).overflow_hidden().bg(rgb(RAISED))
-                .when_some(it.thumb.clone(), |d, t| d.child(img(t).size_full().object_fit(ObjectFit::Cover)
-                    .with_animation(SharedString::from(format!("th{key}")),
-                        Animation::new(Duration::from_millis(300)).with_easing(ease_out_quint()), |e, t| e.opacity(t))));
-            div().id(("row", i)).flex().flex_none().items_center().gap(px(12.)).h(px(ROW_H)).px(px(8.)).rounded(px(8.))
+                .when_some(it.thumb.clone(), |d, (t, at)| d.child(img(t).size_full().object_fit(ObjectFit::Cover)
+                    .opacity(fade(at, now, 300.))));
+            div().id(("row", i)).opacity(enter).relative().left(px((1.0 - enter) * 12.)).flex().flex_none().items_center().gap(px(12.)).h(px(ROW_H)).px(px(8.)).rounded(px(8.))
                 .hover(|s| s.bg(rgb(RAISED)))
                 .child(div().size(px(6.)).flex_none().rounded_full().when(live, |d| d.bg(rgb(REC))))
                 .child(thumb)
@@ -316,9 +353,6 @@ impl Render for Compresor {
                             v.refresh_disk();
                             cx.notify();
                         }))))
-                .with_animation(SharedString::from(format!("in{key}")),
-                    Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
-                    |row, t| row.opacity(t).relative().left(px((1.0 - t) * 12.)))
         }).collect();
 
         let list_h = self.list_h.clone();
@@ -329,11 +363,12 @@ impl Render for Compresor {
         });
         let list = div().id("list").relative().flex_1().min_h(px(0.)).overflow_hidden()
             .on_scroll_wheel(cx.listener(|v, e: &ScrollWheelEvent, window, cx| {
-                v.scroll_target -= f32::from(e.delta.pixel_delta(window.line_height()).y);
+                // Windows da 3 líneas (~1 fila) por muesca; se multiplica para avanzar unas 3 filas
+                v.scroll_target -= f32::from(e.delta.pixel_delta(window.line_height()).y) * 2.5;
                 cx.notify();
             }))
             .child(canvas(move |b, _, _| list_h.set(f32::from(b.size.height)), |_, _, _, _| {}).absolute().size_full())
-            .child(div().absolute().left_0().right_0().top(px(-self.scroll_y)).px(px(8.))
+            .child(div().absolute().left_0().right_0().top(px(first as f32 * stride - self.scroll_y)).px(px(8.))
                 .flex().flex_col().gap(px(ROW_GAP)).children(rows))
             .children(scrollbar);
 
@@ -413,6 +448,19 @@ impl Render for Compresor {
                 .when(ffmpeg_missing, |m| m.child(div().px(px(16.)).py(px(10.)).rounded(px(10.)).bg(rgba(0xe5484d1a))
                     .border_1().border_color(rgba(0xe5484d4d)).text_color(rgb(0xf2a7a9))
                     .child("No se encuentra ffmpeg. Reinstala Slimcast o instala ffmpeg con  winget install Gyan.FFmpeg --version 8.0.1")))
+                .when_some(self.update.clone(), |m, r| {
+                    let busy = self.update_msg.as_ref().is_some_and(|m| m.as_ref() == "Descargando…");
+                    let enabled = !running && !busy;
+                    m.child(div().flex().items_center().gap(px(12.)).px(px(16.)).py(px(8.)).rounded(px(10.))
+                        .bg(rgba(0xe8a33d14)).border_1().border_color(rgba(0xe8a33d40))
+                        .child(div().text_color(rgb(ACCENT)).child(format!("Slimcast {} disponible", r.version)))
+                        .child(div().flex_1().text_color(rgb(TEXT2)).text_size(px(12.))
+                            .child(if busy { "Slimcast se cerrará y volverá a abrirse ya actualizado".into() }
+                                else if running { "Podrás actualizar al terminar la compresión".into() }
+                                else { self.update_msg.clone().unwrap_or_default() }))
+                        .child(button("update", if busy { "Descargando…" } else { "Actualizar" }, enabled)
+                            .when(enabled, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.install_update(cx))))))
+                })
                 .children(disk)
                 .child(queue))
             .child(footer)

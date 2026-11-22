@@ -53,3 +53,5 @@ Name: "{autodesktop}\Slimcast"; Filename: "{app}\Slimcast.exe"; Tasks: desktopic
 
 [Run]
 Filename: "{app}\Slimcast.exe"; Description: "{cm:LaunchProgram,Slimcast}"; Flags: nowait postinstall skipifsilent
+; la actualización desde la app instala en silencio: al acabar, vuelve a abrir Slimcast
+Filename: "{app}\Slimcast.exe"; Flags: nowait; Check: WizardSilent
