@@ -163,6 +163,19 @@ mod tests {
         assert!(parse(only_exe, "1.9.3", How::AppImage("/x/a".into())).is_none());
     }
 
+    // Actualización real contra GitHub: SLIMCAST_TEST_UPDATE_APPIMAGE=/ruta/a/un/Slimcast.AppImage viejo.
+    // Descarga el AppImage de la última release, sustituye ese archivo y lo abre.
+    #[test]
+    fn real_appimage_update() {
+        let Some(path) = std::env::var_os("SLIMCAST_TEST_UPDATE_APPIMAGE").map(PathBuf::from) else { return };
+        let out = curl().args(["--max-time", "10", API]).output().unwrap();
+        let r = parse(&String::from_utf8_lossy(&out.stdout), "0.0.1", How::AppImage(path.clone()))
+            .expect("la última release no tiene AppImage");
+        let before = std::fs::metadata(&path).unwrap().len();
+        install(&r).unwrap();
+        println!("{} actualizado a {}: {before} → {} bytes", path.display(), r.version, std::fs::metadata(&path).unwrap().len());
+    }
+
     #[test]
     fn replace_swaps_the_file_or_leaves_it_untouched() {
         let dir = std::env::temp_dir().join(format!("slimcast-replace-{}", std::process::id()));
