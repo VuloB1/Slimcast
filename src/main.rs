@@ -222,9 +222,23 @@ impl Compresor {
     }
 }
 
-fn button(id: impl Into<SharedString>, label: impl Into<SharedString>, enabled: bool) -> Stateful<Div> {
-    div().id(id.into()).flex().items_center().h(px(28.)).px(px(12.)).rounded(px(7.))
-        .bg(rgb(RAISED)).border_1().border_color(rgba(LINE)).child(label.into())
+// Iconos de Segoe MDL2 Assets, el set de Windows que ya usan los botones de la ventana
+const I_VIDEO: &str = "\u{e8b2}"; // tira de película
+const I_FOLDER: &str = "\u{ed25}";
+const I_PLAY: &str = "\u{e768}";
+const I_STOP: &str = "\u{e71a}";
+const I_DOWNLOAD: &str = "\u{e896}";
+const I_CLOSE: &str = "\u{e711}";
+
+/// Icono de línea; toma el color que se le dé o el del texto que lo rodea.
+fn icon(glyph: &'static str, size: f32) -> Div {
+    div().flex_none().font_family("Segoe MDL2 Assets").text_size(px(size)).child(glyph)
+}
+
+fn button(id: impl Into<SharedString>, glyph: &'static str, label: impl Into<SharedString>, enabled: bool) -> Stateful<Div> {
+    div().id(id.into()).flex().items_center().gap(px(8.)).h(px(28.)).px(px(12.)).rounded(px(7.))
+        .bg(rgb(RAISED)).border_1().border_color(rgba(LINE))
+        .child(icon(glyph, 14.).text_color(rgb(TEXT2))).child(label.into())
         .when(enabled, |b| b.cursor_pointer().hover(|s| s.bg(rgb(HOVER))).active(|s| s.bg(rgb(PRESSED))))
         .when(!enabled, |b| b.opacity(0.4))
 }
@@ -303,9 +317,9 @@ impl Render for Compresor {
                 .child(div().font_family(MONO).text_size(px(11.)).text_color(rgb(MUTED))
                     .child(concat!("v", env!("CARGO_PKG_VERSION")))))
             .when(has, |h| h.child(div().flex().gap(px(8.)).pr(px(12.))
-                .child(button("add-files", t("add_videos"), !running)
+                .child(button("add-files", I_VIDEO, t("add_videos"), !running)
                     .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx)))))
-                .child(button("add-folder", t("add_folder"), !running)
+                .child(button("add-folder", I_FOLDER, t("add_folder"), !running)
                     .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))))
             .child(caption("min", "\u{e921}", WindowControlArea::Min, false))
             .child(caption("max", if window.is_maximized() { "\u{e923}" } else { "\u{e922}" }, WindowControlArea::Max, false))
@@ -366,7 +380,7 @@ impl Render for Compresor {
                     .text_color(rgb(TEXT2)).child(sizes))
                 .child(div().w(px(180.)).flex_none().truncate().text_size(px(13.)).text_color(rgb(state_color)).child(state))
                 .child(div().id(("rm", i)).size(px(24.)).flex_none().flex().items_center().justify_center().rounded(px(6.))
-                    .text_color(rgb(MUTED)).child("×")
+                    .text_color(rgb(MUTED)).child(icon(I_CLOSE, 10.))
                     .when(running, |b| b.opacity(0.4))
                     .when(!running, |b| b.cursor_pointer().hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
                         .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
@@ -409,8 +423,8 @@ impl Render for Compresor {
                 .rounded(px(10.)).border_1().border_dashed().border_color(rgba(0xededed24)).text_color(rgb(TEXT2))
                 .child(t("drop"))
                 .child(div().flex().gap(px(8.))
-                    .child(button("e-files", t("add_videos"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx))))
-                    .child(button("e-folder", t("add_folder"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))));
+                    .child(button("e-files", I_VIDEO, t("add_videos"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx))))
+                    .child(button("e-folder", I_FOLDER, t("add_folder"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))));
 
         let seg_group = |children: Vec<Stateful<Div>>| div().flex().p(px(2.)).rounded(px(9.)).bg(rgb(RAISED))
             .border_1().border_color(rgba(LINE)).children(children);
@@ -437,14 +451,14 @@ impl Render for Compresor {
             .when(!running, |b| b.cursor_pointer().on_click(cx.listener(|v, _: &ClickEvent, _, cx| { v.cap30 = !v.cap30; cx.notify() })));
 
         // un solo hueco para la acción principal: mientras comprime, Comprimir pasa a ser Cancelar
-        let action = div().id("start").flex().flex_none().items_center().justify_center().min_w(px(150.)).h(px(36.)).px(px(16.))
+        let action = div().id("start").flex().flex_none().items_center().justify_center().gap(px(8.)).min_w(px(150.)).h(px(36.)).px(px(16.))
             .rounded(px(8.)).font_weight(FontWeight::MEDIUM);
         let action = if running {
-            action.bg(rgb(RAISED)).border_1().border_color(rgba(LINE)).text_color(rgb(TEXT)).child(t("cancel"))
+            action.bg(rgb(RAISED)).border_1().border_color(rgba(LINE)).text_color(rgb(TEXT)).child(icon(I_STOP, 12.)).child(t("cancel"))
                 .cursor_pointer().hover(|s| s.bg(rgb(HOVER))).active(|s| s.bg(rgb(PRESSED)))
                 .on_click(cx.listener(|v, _: &ClickEvent, _, _| v.stop.store(true, Ordering::Relaxed)))
         } else {
-            action.bg(rgb(TEXT)).text_color(rgb(BG))
+            action.bg(rgb(TEXT)).text_color(rgb(BG)).child(icon(I_PLAY, 12.))
                 .child(if queued > 1 { tf("compress_n", &[&queued]) } else { t("compress").into() })
                 .when(can_start, |b| b.cursor_pointer().hover(|s| s.bg(rgb(0xffffff))).active(|s| s.bg(rgb(0xd4d4d4)))
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.start(cx))))
@@ -480,7 +494,7 @@ impl Render for Compresor {
                             .child(if busy { t("update_restart").into() }
                                 else if running { t("update_later").into() }
                                 else { self.update_msg.clone().unwrap_or_default() }))
-                        .child(button("update", if busy { t("downloading") } else { t("update") }, enabled)
+                        .child(button("update", I_DOWNLOAD, if busy { t("downloading") } else { t("update") }, enabled)
                             .when(enabled, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.install_update(cx))))))
                 })
                 .children(disk)
