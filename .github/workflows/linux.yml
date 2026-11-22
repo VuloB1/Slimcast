@@ -1,0 +1,95 @@
+# Compila Slimcast para Linux y añade el AppImage y el Flatpak a la release.
+# - Al publicar una release (desde el PC de Windows, con el instalador .exe): sube los dos archivos a esa release.
+# - A mano (Actions → Linux → Run workflow): compila y deja los archivos como artefactos, sin publicar nada.
+name: Linux
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    # Ubuntu 22.04 (glibc 2.35): el binario funciona en esa distro y en todas las más nuevas
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Comprobar que la versión coincide con la etiqueta
+        if: github.event_name == 'release'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="${{ github.event.release.tag_name }}"
+          [ "v$version" = "$tag" ] || { echo "Cargo.toml dice $version pero la etiqueta es $tag"; exit 1; }
+
+      - name: Dependencias de GPUI
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev ffmpeg
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests (incluye una compresión real por CPU)
+        run: |
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=s=640x360:r=30:d=4 -f lavfi -i sine=d=4 \
+            -c:v libx264 -crf 18 -c:a aac -shortest /tmp/clip.mp4
+          COMPRESOR_TEST_CLIP=/tmp/clip.mp4 cargo test --release
+
+      - name: Compilar
+        run: cargo build --release
+
+      - name: AppImage
+        run: bash packaging/linux/build-appimage.sh target/release/slimcast
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            target/release/slimcast
+            dist/*.AppImage
+          if-no-files-found: error
+
+  flatpak:
+    needs: appimage
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+      - name: Flatpak
+        run: |
+          # los artefactos pierden el permiso de ejecución
+          chmod +x target/release/slimcast
+          bash packaging/flatpak/build-flatpak.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: dist/*.flatpak
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'release'
+    needs: [appimage, flatpak]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Subir a la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # la carpeta dentro de cada artefacto depende de cuántos archivos lleva: se buscan por nombre
+          files=$(find artifacts -name '*.AppImage' -o -name '*.flatpak')
+          [ "$(echo "$files" | wc -l)" = 2 ] || { echo "faltan archivos: $files"; exit 1; }
+          gh release upload "${{ github.event.release.tag_name }}" --repo "${{ github.repository }}" --clobber $files

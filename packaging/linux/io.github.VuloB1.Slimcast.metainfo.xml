@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ficha de la app para los centros de software (GNOME Software, Discover) al instalar el Flatpak -->
+<component type="desktop-application">
+  <id>io.github.VuloB1.Slimcast</id>
+  <name>Slimcast</name>
+  <summary>Compress your OBS recordings to HEVC and get your disk space back</summary>
+  <summary xml:lang="es">Comprime tus grabaciones de OBS a HEVC y recupera espacio en el disco</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="io.github.vulob1">
+    <name>VuloB1</name>
+  </developer>
+  <description>
+    <p>Slimcast converts your OBS recordings and streams to HEVC (H.265) on your GPU or CPU, with no visible quality loss.</p>
+    <ul>
+      <li>NVIDIA (NVENC), AMD and Intel (VAAPI) or the CPU</li>
+      <li>Never touches the originals: output goes to a comprimidos folder next to each video</li>
+      <li>Checks free disk space first and shows how much you can free up</li>
+      <li>Copies every audio track as is and can lower the video to 30 fps</li>
+      <li>In English, Spanish, Portuguese, Japanese, Chinese and Korean</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.VuloB1.Slimcast.desktop</launchable>
+  <url type="homepage">https://github.com/VuloB1/Slimcast</url>
+  <url type="bugtracker">https://github.com/VuloB1/Slimcast/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/VuloB1/Slimcast/main/docs/screenshot.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.3.0" date="2026-11-22"/>
+  </releases>
+</component>

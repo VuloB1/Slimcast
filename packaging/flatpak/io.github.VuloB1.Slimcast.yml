@@ -1,0 +1,46 @@
+# Flatpak de Slimcast. Empaqueta el binario ya compilado (target/release/slimcast, en Ubuntu 22.04) y el mismo
+# ffmpeg que el AppImage. Se genera con packaging/flatpak/build-flatpak.sh y se publica como bundle en GitHub.
+app-id: io.github.VuloB1.Slimcast
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: slimcast
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # comprobar si hay versión nueva en GitHub
+  - --share=network
+  # VAAPI (/dev/dri) y NVENC (/dev/nvidia*)
+  - --device=all
+  # Slimcast escribe la carpeta "comprimidos" junto a cada video, esté en el disco que esté
+  - --filesystem=host
+modules:
+  - name: slimcast
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 slimcast /app/bin/slimcast
+      - install -Dm755 ffmpeg/bin/ffmpeg /app/bin/ffmpeg
+      - install -Dm755 ffmpeg/bin/ffprobe /app/bin/ffprobe
+      - mkdir -p /app/lib && cp -a ffmpeg/lib/*.so.* /app/lib/
+      - install -Dm644 io.github.VuloB1.Slimcast.desktop /app/share/applications/io.github.VuloB1.Slimcast.desktop
+      - install -Dm644 io.github.VuloB1.Slimcast.metainfo.xml /app/share/metainfo/io.github.VuloB1.Slimcast.metainfo.xml
+      - install -Dm644 icon-256.png /app/share/icons/hicolor/256x256/apps/io.github.VuloB1.Slimcast.png
+      - install -Dm644 LICENSE /app/share/licenses/io.github.VuloB1.Slimcast/LICENSE
+      - install -Dm644 ffmpeg/LICENSE.txt /app/share/licenses/io.github.VuloB1.Slimcast/ffmpeg-LICENSE.txt
+    sources:
+      - type: file
+        path: ../../target/release/slimcast
+      # mismo ffmpeg que packaging/linux/ffmpeg.env
+      - type: archive
+        url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-02-28-12-59/ffmpeg-n8.0.1-66-g27b8d1a017-linux64-gpl-shared-8.0.tar.xz
+        sha256: 38f5363bef58d74547e5055846d76d8b20bb2872a87b0aab71611b010b437a6f
+        dest: ffmpeg
+      - type: file
+        path: ../linux/io.github.VuloB1.Slimcast.desktop
+      - type: file
+        path: ../linux/io.github.VuloB1.Slimcast.metainfo.xml
+      - type: file
+        path: ../../assets/icon-256.png
+      - type: file
+        path: ../../LICENSE

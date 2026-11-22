@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Name=Slimcast
+GenericName=Video Compressor
+GenericName[es]=Compresor de video
+GenericName[pt]=Compressor de vídeo
+GenericName[ja]=動画圧縮
+GenericName[zh_CN]=视频压缩
+GenericName[ko]=동영상 압축
+Comment=Compress your OBS recordings to HEVC and get your disk space back
+Comment[es]=Comprime tus grabaciones de OBS a HEVC y recupera espacio en el disco
+Comment[pt]=Comprima suas gravações do OBS em HEVC e recupere espaço no disco
+Comment[ja]=OBS の録画を HEVC に圧縮してディスクの空きを取り戻す
+Comment[zh_CN]=将 OBS 录像压缩为 HEVC，释放磁盘空间
+Comment[ko]=OBS 녹화를 HEVC로 압축해 디스크 공간을 확보하세요
+Exec=slimcast %F
+Icon=io.github.VuloB1.Slimcast
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=obs;twitch;stream;hevc;h265;compress;ffmpeg;
+MimeType=video/mp4;video/x-matroska;video/x-flv;video/mp2t;video/quicktime;video/webm;video/x-msvideo;video/x-m4v;
+StartupWMClass=io.github.VuloB1.Slimcast

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Punto de entrada del AppImage: usa las librerías incluidas y ayuda al ffmpeg estático a encontrar los
+# drivers VAAPI del sistema, que cada distro guarda en una carpeta distinta.
+HERE="$(dirname "$(readlink -f "$0")")"
+export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+if [ -z "$LIBVA_DRIVERS_PATH" ]; then
+  for d in /usr/lib/x86_64-linux-gnu/dri /usr/lib64/dri /usr/lib/dri /run/opengl-driver/lib/dri; do
+    [ -d "$d" ] && LIBVA_DRIVERS_PATH="${LIBVA_DRIVERS_PATH:+$LIBVA_DRIVERS_PATH:}$d"
+  done
+  [ -n "$LIBVA_DRIVERS_PATH" ] && export LIBVA_DRIVERS_PATH
+fi
+exec "$HERE/usr/bin/slimcast" "$@"

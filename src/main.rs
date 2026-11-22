@@ -6,9 +6,9 @@ mod update;
 use encode::{Device, Encoder, Job, Outcome};
 use i18n::{t, tf};
 use gpui::{
-    App, Application, Bounds, ClickEvent, Context, Div, ExternalPaths, FontWeight,
+    App, Application, Bounds, ClickEvent, Context, Div, ExternalPaths, FontWeight, MouseButton, MouseDownEvent,
     ObjectFit, PathPromptOptions, PromptLevel, ScrollWheelEvent, SharedString, Stateful, StyledImage, Window,
-    WindowBounds, WindowControlArea, WindowOptions, canvas, div, img, prelude::*, px, relative, rgb, rgba, size,
+    WindowBounds, WindowControlArea, WindowOptions, canvas, div, img, prelude::*, px, relative, rgb, rgba, size, svg,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -35,7 +35,10 @@ const OK: u32 = 0x4cc38a;
 const TRACK: u32 = 0x2c2c2f; // más claro que RAISED para que la barra se vea con la fila resaltada
 const USED: u32 = 0x47474c;
 const QUEUED: u32 = 0x707077;
+#[cfg(windows)]
 const MONO: &str = "Cascadia Mono";
+#[cfg(not(windows))]
+const MONO: &str = "DejaVu Sans Mono";
 const ROW_H: f32 = 52.;
 const ROW_GAP: f32 = 2.;
 
@@ -165,7 +168,7 @@ impl Compresor {
     fn refresh_disk(&mut self) {
         let items = self.items.lock().unwrap();
         self.disk = items.first().and_then(|i| i.path.parent()).map(|dir| {
-            let drive = dir.components().next().map(|c| c.as_os_str().to_string_lossy().to_string()).unwrap_or_default();
+            let drive = encode::drive_name(dir);
             let (total, free) = encode::disk(dir);
             (drive, total, free)
         });
@@ -173,12 +176,17 @@ impl Compresor {
 
     fn install_update(&mut self, cx: &mut Context<Self>) {
         let Some(release) = self.update.clone() else { return };
+        // Flatpak (fuera de Flathub): la versión nueva se descarga desde su página
+        if let Some(page) = release.page() { return cx.open_url(&page) }
         self.update_msg = Some(t("downloading").into());
         cx.notify();
         cx.spawn(async move |this, cx| {
+            let page = release.web();
             match cx.background_executor().spawn(async move { update::install(&release) }).await {
-                Ok(()) => { cx.update(|cx| cx.quit()).ok(); } // el instalador cierra, actualiza y vuelve a abrir
-                Err(e) => { this.update(cx, |v, cx| { v.update_msg = Some(e.into()); cx.notify() }).ok(); }
+                Ok(()) => { cx.update(|cx| cx.quit()).ok(); } // la versión nueva ya se está abriendo
+                // sin permiso para sustituir el AppImage: a la página, para descargarlo a mano
+                Err(None) => { this.update(cx, |v, cx| { v.update_msg = None; cx.open_url(&page); cx.notify() }).ok(); }
+                Err(Some(e)) => { this.update(cx, |v, cx| { v.update_msg = Some(e.into()); cx.notify() }).ok(); }
             }
         }).detach();
     }
@@ -222,23 +230,32 @@ impl Compresor {
     }
 }
 
-// Iconos de Segoe MDL2 Assets, el set de Windows que ya usan los botones de la ventana
-const I_VIDEO: &str = "\u{e8b2}"; // tira de película
-const I_FOLDER: &str = "\u{ed25}";
-const I_PLAY: &str = "\u{e768}";
-const I_STOP: &str = "\u{e71a}";
-const I_DOWNLOAD: &str = "\u{e896}";
-const I_CLOSE: &str = "\u{e711}";
+/// Iconos de Lucide (ISC, assets/icons/LICENSE) metidos en el ejecutable: el mismo set en Windows y Linux.
+struct Icons;
 
-/// Icono de línea; toma el color que se le dé o el del texto que lo rodea.
-fn icon(glyph: &'static str, size: f32) -> Div {
-    div().flex_none().font_family("Segoe MDL2 Assets").text_size(px(size)).child(glyph)
+impl gpui::AssetSource for Icons {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        macro_rules! icons { ($($name:literal),*) => { match path {
+            $(concat!("icons/", $name, ".svg") => Some(include_bytes!(concat!("../assets/icons/", $name, ".svg")).as_slice()),)*
+            _ => None,
+        } } }
+        Ok(icons!("film", "folder-open", "play", "square", "download", "x", "minus", "copy").map(Into::into))
+    }
+
+    fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Icono de línea. GPUI solo pinta un SVG con color propio, así que siempre lleva uno.
+fn icon(name: &str, size: f32, color: u32) -> gpui::Svg {
+    svg().path(SharedString::from(format!("icons/{name}.svg"))).flex_none().size(px(size)).text_color(rgb(color))
 }
 
 fn button(id: impl Into<SharedString>, glyph: &'static str, label: impl Into<SharedString>, enabled: bool) -> Stateful<Div> {
     div().id(id.into()).flex().items_center().gap(px(8.)).h(px(28.)).px(px(12.)).rounded(px(7.))
         .bg(rgb(RAISED)).border_1().border_color(rgba(LINE))
-        .child(icon(glyph, 14.).text_color(rgb(TEXT2))).child(label.into())
+        .child(icon(glyph, 14., TEXT2)).child(label.into())
         .when(enabled, |b| b.cursor_pointer().hover(|s| s.bg(rgb(HOVER))).active(|s| s.bg(rgb(PRESSED))))
         .when(!enabled, |b| b.opacity(0.4))
 }
@@ -302,28 +319,44 @@ impl Render for Compresor {
             .rounded(px(7.)).bg(rgb(CARD)).border_1().border_color(rgba(LINE))
             .child(div().w(px(17.)).h(px(4.)).rounded(px(1.)).bg(rgb(0x55555b)))
             .child(div().w(px(8.)).h(px(4.)).rounded(px(1.)).bg(rgb(ACCENT)));
-        let caption = |id: &'static str, glyph: &'static str, area: WindowControlArea, close: bool|
-            div().id(id).w(px(46.)).h_full().flex().items_center().justify_center()
-                .font_family("Segoe MDL2 Assets").text_size(px(10.)).text_color(rgb(TEXT2))
+        // En Windows el sistema mueve la ventana y gestiona los botones (window_control_area); en Linux con
+        // decoraciones propias lo hace Slimcast. Si el escritorio pone su propia barra, sobran los botones.
+        let own_frame = cfg!(windows) || matches!(window.window_decorations(), gpui::Decorations::Client { .. });
+        let caption = |id: &'static str, glyph: &'static str, area: WindowControlArea, close: bool| {
+            let group = SharedString::from(format!("{id}-g"));
+            div().id(id).group(group.clone()).w(px(46.)).h_full().flex().items_center().justify_center()
                 .window_control_area(area)
-                .when(close, |b| b.hover(|s| s.bg(rgb(0xc42b1c)).text_color(rgb(0xffffff))))
-                .when(!close, |b| b.hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT))))
-                .child(glyph);
+                .when(close, |b| b.hover(|s| s.bg(rgb(0xc42b1c))))
+                .when(!close, |b| b.hover(|s| s.bg(rgb(HOVER))))
+                .child(icon(glyph, 14., TEXT2)
+                    .group_hover(group, move |s| s.text_color(rgb(if close { 0xffffff } else { TEXT }))))
+                .when(cfg!(not(windows)), |b| b.on_click(cx.listener(move |v, _: &ClickEvent, window, cx| match area {
+                    WindowControlArea::Min => window.minimize_window(),
+                    WindowControlArea::Max => window.zoom_window(),
+                    _ => if confirm_close(&v.running, &v.stop, window, cx) { cx.quit() },
+                })))
+        };
         let header = div().flex().items_center().h(px(44.)).bg(rgb(DEEP)).border_b_1().border_color(rgba(LINE))
-            .child(div().flex_1().h_full().flex().items_center().gap(px(10.)).pl(px(16.))
+            .child(div().id("drag").flex_1().h_full().flex().items_center().gap(px(10.)).pl(px(16.))
                 .window_control_area(WindowControlArea::Drag)
+                .when(cfg!(not(windows)) && own_frame, |d| d
+                    .on_mouse_down(MouseButton::Left, |e: &MouseDownEvent, window, _| {
+                        if e.click_count == 2 { window.zoom_window() } else { window.start_window_move() }
+                    })
+                    .on_mouse_down(MouseButton::Right, |e: &MouseDownEvent, window, _| window.show_window_menu(e.position)))
                 .child(mark)
                 .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child("Slimcast"))
                 .child(div().font_family(MONO).text_size(px(11.)).text_color(rgb(MUTED))
                     .child(concat!("v", env!("CARGO_PKG_VERSION")))))
             .when(has, |h| h.child(div().flex().gap(px(8.)).pr(px(12.))
-                .child(button("add-files", I_VIDEO, t("add_videos"), !running)
+                .child(button("add-files", "film", t("add_videos"), !running)
                     .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx)))))
-                .child(button("add-folder", I_FOLDER, t("add_folder"), !running)
+                .child(button("add-folder", "folder-open", t("add_folder"), !running)
                     .when(!running, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))))
-            .child(caption("min", "\u{e921}", WindowControlArea::Min, false))
-            .child(caption("max", if window.is_maximized() { "\u{e923}" } else { "\u{e922}" }, WindowControlArea::Max, false))
-            .child(caption("close", "\u{e8bb}", WindowControlArea::Close, true));
+            .when(own_frame, |h| h
+                .child(caption("min", "minus", WindowControlArea::Min, false))
+                .child(caption("max", if window.is_maximized() { "copy" } else { "square" }, WindowControlArea::Max, false))
+                .child(caption("close", "x", WindowControlArea::Close, true)));
 
         let disk = self.disk.clone().map(|(drive, total, free)| {
             let pending: u64 = items.iter().filter(|i| matches!(i.state, State::Queued | State::Running(_))).map(|i| i.size).sum();
@@ -379,10 +412,10 @@ impl Render for Compresor {
                 .child(div().w(px(200.)).flex_none().flex().justify_end().font_family(MONO).text_size(px(12.))
                     .text_color(rgb(TEXT2)).child(sizes))
                 .child(div().w(px(180.)).flex_none().truncate().text_size(px(13.)).text_color(rgb(state_color)).child(state))
-                .child(div().id(("rm", i)).size(px(24.)).flex_none().flex().items_center().justify_center().rounded(px(6.))
-                    .text_color(rgb(MUTED)).child(icon(I_CLOSE, 10.))
+                .child(div().id(("rm", i)).group("rm").size(px(24.)).flex_none().flex().items_center().justify_center().rounded(px(6.))
+                    .child(icon("x", 14., MUTED).when(!running, |s| s.group_hover("rm", |s| s.text_color(rgb(TEXT)))))
                     .when(running, |b| b.opacity(0.4))
-                    .when(!running, |b| b.cursor_pointer().hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
+                    .when(!running, |b| b.cursor_pointer().hover(|s| s.bg(rgb(HOVER)))
                         .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
                             v.items.lock().unwrap().remove(i);
                             v.refresh_disk();
@@ -423,8 +456,8 @@ impl Render for Compresor {
                 .rounded(px(10.)).border_1().border_dashed().border_color(rgba(0xededed24)).text_color(rgb(TEXT2))
                 .child(t("drop"))
                 .child(div().flex().gap(px(8.))
-                    .child(button("e-files", I_VIDEO, t("add_videos"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx))))
-                    .child(button("e-folder", I_FOLDER, t("add_folder"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))));
+                    .child(button("e-files", "film", t("add_videos"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(false, cx))))
+                    .child(button("e-folder", "folder-open", t("add_folder"), true).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick(true, cx)))))));
 
         let seg_group = |children: Vec<Stateful<Div>>| div().flex().p(px(2.)).rounded(px(9.)).bg(rgb(RAISED))
             .border_1().border_color(rgba(LINE)).children(children);
@@ -436,7 +469,7 @@ impl Render for Compresor {
             None => vec![segment("detect", t("detecting"), false, false)],
             Some(list) => list.iter().enumerate().map(|(i, d)| {
                 let label = if d.encoder == Encoder::Cpu { "CPU".to_string() } else { short_name(&d.name) };
-                let label = if d.ok { label } else { format!("{label} (no disponible)") };
+                let label = if d.ok { label } else { tf("unavailable", &[&label]) };
                 let enabled = d.ok && !running;
                 segment(SharedString::from(format!("dev{i}")), label, self.device == i, enabled)
                     .when(enabled, |b| b.on_click(cx.listener(move |v, _: &ClickEvent, _, cx| { v.device = i; cx.notify() })))
@@ -454,11 +487,11 @@ impl Render for Compresor {
         let action = div().id("start").flex().flex_none().items_center().justify_center().gap(px(8.)).min_w(px(150.)).h(px(36.)).px(px(16.))
             .rounded(px(8.)).font_weight(FontWeight::MEDIUM);
         let action = if running {
-            action.bg(rgb(RAISED)).border_1().border_color(rgba(LINE)).text_color(rgb(TEXT)).child(icon(I_STOP, 12.)).child(t("cancel"))
+            action.bg(rgb(RAISED)).border_1().border_color(rgba(LINE)).text_color(rgb(TEXT)).child(icon("square", 14., TEXT)).child(t("cancel"))
                 .cursor_pointer().hover(|s| s.bg(rgb(HOVER))).active(|s| s.bg(rgb(PRESSED)))
                 .on_click(cx.listener(|v, _: &ClickEvent, _, _| v.stop.store(true, Ordering::Relaxed)))
         } else {
-            action.bg(rgb(TEXT)).text_color(rgb(BG)).child(icon(I_PLAY, 12.))
+            action.bg(rgb(TEXT)).text_color(rgb(BG)).child(icon("play", 14., BG))
                 .child(if queued > 1 { tf("compress_n", &[&queued]) } else { t("compress").into() })
                 .when(can_start, |b| b.cursor_pointer().hover(|s| s.bg(rgb(0xffffff))).active(|s| s.bg(rgb(0xd4d4d4)))
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.start(cx))))
@@ -494,17 +527,60 @@ impl Render for Compresor {
                             .child(if busy { t("update_restart").into() }
                                 else if running { t("update_later").into() }
                                 else { self.update_msg.clone().unwrap_or_default() }))
-                        .child(button("update", I_DOWNLOAD, if busy { t("downloading") } else { t("update") }, enabled)
+                        .child(button("update", "download", if busy { t("downloading") } else { t("update") }, enabled)
                             .when(enabled, |b| b.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.install_update(cx))))))
                 })
                 .children(disk)
                 .child(queue))
             .child(footer)
+            .relative()
+            .children(resize_handles(window))
     }
 }
 
+/// Bordes para redimensionar cuando Slimcast dibuja su propio marco (Linux sin barra del escritorio).
+/// shortcut: sin sombra ni esquinas redondeadas como Zed; añadirlas si en GNOME se ve demasiado plano
+fn resize_handles(window: &Window) -> Vec<gpui::AnyElement> {
+    let gpui::Decorations::Client { tiling } = window.window_decorations() else { return Vec::new() };
+    if cfg!(windows) || window.is_maximized() || tiling.top || tiling.bottom || tiling.left || tiling.right {
+        return Vec::new();
+    }
+    use gpui::{CursorStyle as C, ResizeEdge as E};
+    let (edge, corner) = (px(5.), px(10.));
+    let handle = |id: &'static str, e: E, cursor: C| div().id(id).absolute().cursor(cursor)
+        .on_mouse_down(MouseButton::Left, move |_, window, _| window.start_window_resize(e));
+    vec![
+        handle("rz-t", E::Top, C::ResizeUpDown).top_0().left(corner).right(corner).h(edge).into_any_element(),
+        handle("rz-b", E::Bottom, C::ResizeUpDown).bottom_0().left(corner).right(corner).h(edge).into_any_element(),
+        handle("rz-l", E::Left, C::ResizeLeftRight).left_0().top(corner).bottom(corner).w(edge).into_any_element(),
+        handle("rz-r", E::Right, C::ResizeLeftRight).right_0().top(corner).bottom(corner).w(edge).into_any_element(),
+        handle("rz-tl", E::TopLeft, C::ResizeUpLeftDownRight).top_0().left_0().size(corner).into_any_element(),
+        handle("rz-tr", E::TopRight, C::ResizeUpRightDownLeft).top_0().right_0().size(corner).into_any_element(),
+        handle("rz-bl", E::BottomLeft, C::ResizeUpRightDownLeft).bottom_0().left_0().size(corner).into_any_element(),
+        handle("rz-br", E::BottomRight, C::ResizeUpLeftDownRight).bottom_0().right_0().size(corner).into_any_element(),
+    ]
+}
+
+/// true si la ventana se puede cerrar ya. Con una compresión en marcha pregunta antes; si el usuario
+/// acepta, la cancela, espera a que ffmpeg pare y se borre el archivo a medias, y sale.
+fn confirm_close(running: &Arc<AtomicBool>, stop: &Arc<AtomicBool>, window: &mut Window, cx: &mut App) -> bool {
+    if !running.load(Ordering::Relaxed) { return true }
+    let answer = window.prompt(PromptLevel::Warning, t("running_title"),
+        Some(t("running_detail")), &[t("cancel_quit"), t("keep_going")], cx);
+    let (r, s) = (running.clone(), stop.clone());
+    cx.spawn(async move |cx| {
+        if answer.await != Ok(0) { return }
+        s.store(true, Ordering::Relaxed);
+        while r.load(Ordering::Relaxed) {
+            cx.background_executor().timer(Duration::from_millis(100)).await;
+        }
+        cx.update(|cx| cx.quit()).ok();
+    }).detach();
+    false
+}
+
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    Application::new().with_assets(Icons).run(|cx: &mut App| {
         let running = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let bounds = Bounds::centered(None, size(px(1100.), px(640.)), cx);
@@ -512,25 +588,14 @@ fn main() {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(1040.), px(440.))),
             titlebar: Some(gpui::TitlebarOptions { title: Some("Slimcast".into()), appears_transparent: true, ..Default::default() }),
+            // en Linux la barra de título es la de Slimcast (el escritorio puede imponer la suya)
+            window_decorations: cfg!(not(windows)).then_some(gpui::WindowDecorations::Client),
+            app_id: Some("io.github.VuloB1.Slimcast".into()), // en Linux enlaza la ventana con su .desktop e icono
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
             let (r, s) = (running.clone(), stop.clone());
-            window.on_window_should_close(cx, move |window, cx| {
-                if !r.load(Ordering::Relaxed) { return true }
-                let answer = window.prompt(PromptLevel::Warning, t("running_title"),
-                    Some(t("running_detail")), &[t("cancel_quit"), t("keep_going")], cx);
-                let (r, s) = (r.clone(), s.clone());
-                cx.spawn(async move |cx| {
-                    if answer.await != Ok(0) { return }
-                    s.store(true, Ordering::Relaxed);
-                    while r.load(Ordering::Relaxed) { // espera a que ffmpeg pare y se borre el .part
-                        cx.background_executor().timer(Duration::from_millis(100)).await;
-                    }
-                    cx.update(|cx| cx.quit()).ok();
-                }).detach();
-                false
-            });
+            window.on_window_should_close(cx, move |window, cx| confirm_close(&r, &s, window, cx));
             cx.new(|cx| Compresor::new(running.clone(), stop.clone(), cx))
         }).unwrap();
         cx.on_window_closed(|cx| cx.quit()).detach();

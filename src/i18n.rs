@@ -6,34 +6,53 @@ use std::sync::OnceLock;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Lang { En, Es, Pt, Ja, Zh, Ko }
 
-unsafe extern "system" {
-    fn GetUserDefaultUILanguage() -> u16; // kernel32
-}
-
 pub fn lang() -> Lang {
     static L: OnceLock<Lang> = OnceLock::new();
     *L.get_or_init(|| {
-        let code = std::env::var("SLIMCAST_LANG").unwrap_or_default();
-        match code.as_str() {
-            "en" => return Lang::En, "es" => return Lang::Es, "pt" => return Lang::Pt,
-            "ja" => return Lang::Ja, "zh" => return Lang::Zh, "ko" => return Lang::Ko,
-            _ => {}
-        }
-        // los 10 bits bajos del LANGID son el idioma principal
-        match unsafe { GetUserDefaultUILanguage() } & 0x3ff {
-            0x0a => Lang::Es, 0x16 => Lang::Pt, 0x11 => Lang::Ja, 0x04 => Lang::Zh, 0x12 => Lang::Ko,
+        let code = std::env::var("SLIMCAST_LANG").ok().filter(|c| !c.is_empty()).unwrap_or_else(system_lang);
+        match code.get(..2).unwrap_or_default() {
+            "es" => Lang::Es, "pt" => Lang::Pt, "ja" => Lang::Ja, "zh" => Lang::Zh, "ko" => Lang::Ko,
             _ => Lang::En,
         }
     })
 }
 
-/// Fuente de la interfaz: Segoe UI no tiene glifos CJK, y chino y japonés dibujan distinto los mismos caracteres.
+/// Código de idioma del sistema, como "es" o "pt_BR.UTF-8".
+#[cfg(windows)]
+fn system_lang() -> String {
+    unsafe extern "system" {
+        fn GetUserDefaultUILanguage() -> u16; // kernel32
+    }
+    // los 10 bits bajos del LANGID son el idioma principal
+    match unsafe { GetUserDefaultUILanguage() } & 0x3ff {
+        0x0a => "es", 0x16 => "pt", 0x11 => "ja", 0x04 => "zh", 0x12 => "ko", _ => "en",
+    }.into()
+}
+
+#[cfg(not(windows))]
+fn system_lang() -> String {
+    // mismo orden de prioridad que usa gettext
+    ["LC_ALL", "LC_MESSAGES", "LANG"].iter().filter_map(|v| std::env::var(v).ok()).find(|v| !v.is_empty()).unwrap_or_default()
+}
+
+/// Fuente de la interfaz: la latina no tiene glifos CJK, y chino y japonés dibujan distinto los mismos caracteres.
+#[cfg(windows)]
 pub fn font() -> &'static str {
     match lang() {
         Lang::Ja => "Yu Gothic UI",
         Lang::Zh => "Microsoft YaHei UI",
         Lang::Ko => "Malgun Gothic",
         _ => "Segoe UI",
+    }
+}
+
+#[cfg(not(windows))]
+pub fn font() -> &'static str {
+    match lang() {
+        Lang::Ja => "Noto Sans CJK JP",
+        Lang::Zh => "Noto Sans CJK SC",
+        Lang::Ko => "Noto Sans CJK KR",
+        _ => "Noto Sans",
     }
 }
 
@@ -83,7 +102,8 @@ const TEXTS: &[[&str; 7]] = &[
     ["q_best", "Best quality", "Máxima calidad", "Máxima qualidade", "最高画質", "最佳画质", "최고 화질"],
     ["q_balanced", "Balanced", "Equilibrado", "Equilibrado", "バランス", "均衡", "균형"],
     ["q_small", "Smallest", "Más pequeño", "Menor", "最小サイズ", "最小体积", "최소 용량"],
-    ["detecting", "Detecting…", "Detectando…", "Detectando…", "検出中…", "正在检测…", "감지 중…"],
+    ["unavailable", "{} (unavailable)", "{} (no disponible)", "{} (indisponível)", "{}（利用不可）", "{}（不可用）", "{} (사용 불가)"],
+    ["detecting","Detecting…", "Detectando…", "Detectando…", "検出中…", "正在检测…", "감지 중…"],
     ["fps30", "Lower to 30 fps", "Bajar a 30 fps", "Limitar a 30 fps", "30 fps に下げる", "降至 30 fps", "30fps로 낮추기"],
     ["cancel", "Cancel", "Cancelar", "Cancelar", "キャンセル", "取消", "취소"],
     ["compress", "Compress", "Comprimir", "Comprimir", "圧縮", "压缩", "압축"],

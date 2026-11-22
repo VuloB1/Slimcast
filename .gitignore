@@ -2,3 +2,4 @@
 /dist
 /installer/ffmpeg
 comprimidos/
+/.wsl-tmp

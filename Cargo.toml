@@ -5,7 +5,12 @@ edition = "2024"
 
 [dependencies]
 gpui = "0.2.2"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Win32_Graphics_Dxgi", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 opt-level = "s"
@@ -15,3 +20,8 @@ strip = true
 
 [build-dependencies]
 winresource = "0.1"
+
+# xattr 0.2.3 (la usa GPUI en Linux) pide libc::ENOATTR, que libc ya no define; en Linux es ENODATA.
+# shortcut: parche local de una línea, quitarlo cuando GPUI use una xattr nueva
+[patch.crates-io]
+xattr = { path = "patches/xattr" }
